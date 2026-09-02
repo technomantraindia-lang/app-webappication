@@ -11,7 +11,6 @@ import {
   initialAppData,
   initialNotifications,
   liability,
-  marketplaceChats,
   permissionRows,
   reportGroups,
   users
@@ -22,7 +21,7 @@ import {
 function getApiBase() {
   const envBase = import.meta.env.VITE_API_BASE_URL;
   if (envBase) return envBase.replace(/\/$/, "");
-  return "http://localhost:5000";
+  return "https://erp.aakashfinance.com";
 }
 
 const API_BASE = getApiBase();
@@ -270,6 +269,21 @@ const navItems = [
   ["settings", "Settings", "settings"]
 ];
 
+const rolePermissionIndex = { Admin: 1, Owner: 2, Caller: 3, Buyer: 4, Customer: 4 };
+const sectionPermissionMap = {
+  clients: "View all clients",
+  "client-profile": "View all clients",
+  fleet: "View own fleet",
+  dues: "View own fleet",
+  documents: "View own fleet",
+  verification: "Verify payment",
+  caller: "Call / WhatsApp",
+  marketplace: "Create sale listing",
+  reports: "Owner chat",
+  chats: "Owner chat",
+  import: "Import Excel"
+};
+
 const adminUser = users.find((user) => user.role === "Admin") ?? users[0];
 const BANK_RELEASE_RATE_PERCENT = 9.41003284260348;
 pdfjsLib.GlobalWorkerOptions.workerSrc = new URL("pdfjs-dist/build/pdf.worker.mjs", import.meta.url).toString();
@@ -287,7 +301,11 @@ function emptyAppData() {
     notifications: [],
     importRows: [],
     clientImports: [],
-    verificationItems: []
+    verificationItems: [],
+    documents: [],
+    marketplaceThreads: [],
+    users: [],
+    rolePermissions: permissionRows
   };
 }
 
@@ -311,7 +329,7 @@ async function fetchBackendData() {
     }
   };
 
-  const [rawClients, rawVehicles, rawDues, rawListings, rawCaller, rawAudit, rawImports, rawClientImports] = await Promise.all([
+  const [rawClients, rawVehicles, rawDues, rawListings, rawCaller, rawAudit, rawImports, rawClientImports, rawDocuments, rawMarketplaceThreads, rawUsers, rawSettings] = await Promise.all([
     fetchJson("/clients"),
     fetchJson("/vehicles"),
     fetchJson("/dues"),
@@ -319,7 +337,11 @@ async function fetchBackendData() {
     fetchJson("/caller-activities", false),
     fetchJson("/audit-logs", false),
     fetchJson("/imports", false),
-    fetchJson("/client-imports", false)
+    fetchJson("/client-imports", false),
+    fetchJson("/documents", false),
+    fetchJson("/marketplace-threads", false),
+    fetchJson("/users", false),
+    fetchJson("/settings", false)
   ]);
 
   return {
@@ -367,7 +389,8 @@ async function fetchBackendData() {
       price: Number(row.price ?? 0),
       location: row.location ?? "",
       status: row.status ?? "Active",
-      condition: row.condition_note ?? row.condition ?? "Good"
+      condition: row.condition_note ?? row.condition ?? "Good",
+      photos: Array.isArray(row.photos) ? row.photos : []
     })) : [],
     callerActivities: Array.isArray(rawCaller) ? rawCaller.map((row) => ({
       id: row.id,
@@ -406,7 +429,39 @@ async function fetchBackendData() {
       fileName: row.fileName ?? row.file_name ?? "Customer import",
       importedAt: row.importedAt ?? row.imported_at ?? "",
       rows: Array.isArray(row.rows) ? row.rows : []
-    })) : []
+    })) : [],
+    documents: Array.isArray(rawDocuments) ? rawDocuments.map((row) => ({
+      id: row.id,
+      clientId: row.clientId ?? row.client_id ?? "",
+      vehicleId: row.vehicleId ?? row.vehicle_id ?? "",
+      taskId: row.taskId ?? row.task_id ?? "",
+      type: row.type ?? "Other",
+      fileName: row.fileName ?? row.file_name ?? "document",
+      mimeType: row.mimeType ?? row.mime_type ?? "application/octet-stream",
+      size: Number(row.size ?? row.size_bytes ?? 0),
+      dataUrl: row.dataUrl ?? row.data_url ?? "",
+      uploadedBy: row.uploadedBy ?? row.uploaded_by ?? "",
+      uploadedAt: row.uploadedAt ?? row.uploaded_at ?? "",
+      note: row.note ?? ""
+    })) : [],
+    marketplaceThreads: Array.isArray(rawMarketplaceThreads) ? rawMarketplaceThreads.map((row) => ({
+      id: row.id,
+      listingId: row.listingId ?? row.listing_id ?? "",
+      buyerClientId: row.buyerClientId ?? row.buyer_client_id ?? "",
+      sellerClientId: row.sellerClientId ?? row.seller_client_id ?? "",
+      status: row.status ?? "Interested",
+      messages: Array.isArray(row.messages) ? row.messages : [],
+      reported: Boolean(row.reported),
+      blocked: Boolean(row.blocked),
+      updatedAt: row.updatedAt ?? row.updated_at ?? ""
+    })) : [],
+    users: Array.isArray(rawUsers) ? rawUsers.map((row) => ({
+      id: row.id,
+      name: row.name,
+      role: row.role,
+      email: row.email ?? ""
+    })) : [],
+    rolePermissions: Array.isArray(rawSettings?.rolePermissions) ? rawSettings.rolePermissions : permissionRows
   };
 }
 
@@ -430,7 +485,9 @@ async function syncDataToBackend(data) {
       callerActivities: data.callerActivities ?? [],
       auditLogs: data.auditLogs ?? [],
       importRows: data.importRows ?? [],
-      clientImports: data.clientImports ?? []
+      clientImports: data.clientImports ?? [],
+      documents: data.documents ?? [],
+      marketplaceThreads: data.marketplaceThreads ?? []
     })
   });
   const result = await response.json().catch(() => ({}));
@@ -682,11 +739,12 @@ function AdminApp({ session, onLogout }) {
     }), `${vehicle.regNo} updated`);
   };
 
-  const createListing = (event, vehicleId) => {
+  const createListing = async (event, vehicleId) => {
     event.preventDefault();
     const vehicle = data.vehicles.find((item) => item.id === vehicleId);
     if (!vehicle) return;
     const form = new FormData(event.currentTarget);
+    const photos = await readListingPhotos(form.getAll("photos"));
     const price = Number(form.get("price")?.toString().replace(/\D/g, "")) || liability(vehicle);
     const listing = {
       id: `m-${Date.now()}`,
@@ -695,7 +753,8 @@ function AdminApp({ session, onLogout }) {
       price,
       location: form.get("location")?.toString().trim() || getDataClient(data, vehicle.clientId)?.city || "Owner location",
       status: "Active",
-      condition: form.get("condition")?.toString() || "Good"
+      condition: form.get("condition")?.toString() || "Good",
+      photos
     };
     const updated = {
       ...data,
@@ -1044,6 +1103,86 @@ function AdminApp({ session, onLogout }) {
     }
   };
 
+  const saveRolePermissions = async (event) => {
+    event.preventDefault();
+    const form = new FormData(event.currentTarget);
+    const roles = ["Admin", "Owner", "Caller", "Buyer"];
+    const currentRows = Array.isArray(data.rolePermissions) ? data.rolePermissions : permissionRows;
+    const rolePermissions = currentRows.map((row) => [
+      row[0],
+      ...roles.map((role) => form.get(`permission-${role}-${row[0]}`)?.toString() || row[roles.indexOf(role) + 1] || "No")
+    ]);
+
+    setSaveStatus("Saving");
+    try {
+      const response = await fetch(`${API_BASE}/api/permissions`, {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ rolePermissions })
+      });
+      const result = await response.json();
+      if (!response.ok) throw new Error(result.error || "Failed to save permissions");
+      setData((current) => ({ ...current, rolePermissions: result.rolePermissions ?? rolePermissions }));
+      setSaveStatus("Database");
+      setToast("Permissions updated");
+    } catch (err) {
+      setSaveStatus("Error");
+      setToast(err.message || "Failed to save permissions");
+    }
+  };
+
+  const createCallerAccount = async (event) => {
+    event.preventDefault();
+    const form = new FormData(event.currentTarget);
+    const name = form.get("newCallerName")?.toString().trim() ?? "";
+    const email = form.get("newCallerEmail")?.toString().trim() ?? "";
+    const password = form.get("newCallerPassword")?.toString().trim() ?? "";
+    if (!name || !email || !password) {
+      setToast("Caller name, email and password are required");
+      return;
+    }
+    setSaveStatus("Saving");
+    try {
+      const response = await fetch(`${API_BASE}/api/users`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ name, email, password, role: "Caller" })
+      });
+      const result = await response.json();
+      if (!response.ok) throw new Error(result.error || "Failed to create caller");
+      const backendData = await fetchBackendData();
+      setData(backendData);
+      setSaveStatus("Saved");
+      setToast(`Caller created: ${result.email}`);
+      event.currentTarget.reset();
+    } catch (err) {
+      setSaveStatus("Error");
+      setToast(err.message || "Failed to create caller");
+    }
+  };
+
+  const runCallerAssignment = async (event) => {
+    event.preventDefault();
+    const mode = new FormData(event.currentTarget).get("assignmentMode")?.toString() || "permanent-client";
+    setSaveStatus("Saving");
+    try {
+      const response = await fetch(`${API_BASE}/api/caller-assignment/run`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ mode })
+      });
+      const result = await response.json();
+      if (!response.ok) throw new Error(result.error || "Caller assignment failed");
+      const backendData = await fetchBackendData();
+      setData(backendData);
+      setSaveStatus("Database");
+      setToast(`Assigned ${result.assigned} due task(s), skipped ${result.skipped}`);
+    } catch (err) {
+      setSaveStatus("Error");
+      setToast(err.message || "Caller assignment failed");
+    }
+  };
+
   const exportData = () => {
     const blob = new Blob([JSON.stringify(data, null, 2)], { type: "application/json" });
     const url = URL.createObjectURL(blob);
@@ -1120,7 +1259,7 @@ function AdminApp({ session, onLogout }) {
         {section === "marketplace" && <Marketplace data={data} updateListingStatus={updateListingStatus} />}
         {section === "reports" && <Reports data={data} activeReport={activeReport} setActiveReport={setActiveReport} />}
         {section === "import" && <ImportRows data={data} importValidRows={importValidRows} lastSavedAt={lastSavedAt} />}
-        {section === "settings" && <Settings data={data} lastSavedAt={lastSavedAt} saveStatus={saveStatus} clearNotifications={clearNotifications} resetDemoData={resetDemoData} exportData={exportData} saveCommonPassword={saveCommonPassword} />}
+        {section === "settings" && <Settings data={data} lastSavedAt={lastSavedAt} saveStatus={saveStatus} clearNotifications={clearNotifications} resetDemoData={resetDemoData} exportData={exportData} saveCommonPassword={saveCommonPassword} saveRolePermissions={saveRolePermissions} createCallerAccount={createCallerAccount} runCallerAssignment={runCallerAssignment} setSection={openSection} />}
       </section>
     </main>
   );
@@ -1553,6 +1692,7 @@ function Fleet({ data, updateVehicleFinance, createListing }) {
               <label>Price<input name="price" placeholder={formatMoney(liability(vehicle))} /></label>
               <label>Location<input name="location" placeholder={getDataClient(data, vehicle.clientId)?.city ?? "City"} /></label>
               <label>Condition<select name="condition" defaultValue="Good"><option>Excellent</option><option>Good</option><option>Average</option></select></label>
+              <label className="span-2">Photos<input name="photos" type="file" accept="image/*" multiple /></label>
               <button type="submit"><Icon name="store" />Create listing</button>
             </form>
           </details>
@@ -1954,25 +2094,30 @@ function CallerQueue({ data, saveCallerOutcome }) {
 function Marketplace({ data, updateListingStatus }) {
   return (
     <section className="grid-list">
-      {data.listings.map((listing) => (
-        <article className="asset" key={listing.id}>
-          <div className="card-head">
-            <div>
-              <strong>{listing.title}</strong>
-              <span>{listing.location} | {listing.condition}</span>
+      {data.listings.map((listing) => {
+        const listingPhoto = listing.photos?.[0];
+        return (
+          <article className="asset" key={listing.id}>
+            {listingPhoto?.dataUrl && <img className="listing-photo" src={listingPhoto.dataUrl} alt={listing.title} />}
+            <div className="card-head">
+              <div>
+                <strong>{listing.title}</strong>
+                <span>{listing.location} | {listing.condition}</span>
+              </div>
+              <Badge label={listing.status} />
             </div>
-            <Badge label={listing.status} />
-          </div>
-          <Pair label="Price" value={formatMoney(listing.price)} />
-          <Pair label="Vehicle" value={getDataVehicle(data, listing.vehicleId)?.regNo ?? listing.vehicleId} />
-          <Pair label="Unread chat" value={String(marketplaceChats.find((chat) => chat.listingId === listing.id)?.unread ?? 0)} />
-          <div className="actions">
-            <button onClick={() => updateListingStatus(listing.id, "Active")}>Approve</button>
-            <button onClick={() => updateListingStatus(listing.id, "Changes Required")}>Changes</button>
-            <button className="danger" onClick={() => updateListingStatus(listing.id, "Rejected")}>Reject</button>
-          </div>
-        </article>
-      ))}
+            <Pair label="Price" value={formatMoney(listing.price)} />
+            <Pair label="Vehicle" value={getDataVehicle(data, listing.vehicleId)?.regNo ?? listing.vehicleId} />
+            <Pair label="Photos" value={String(listing.photos?.length ?? 0)} />
+            <Pair label="Chat threads" value={String((data.marketplaceThreads ?? []).filter((thread) => thread.listingId === listing.id).length)} />
+            <div className="actions">
+              <button onClick={() => updateListingStatus(listing.id, "Active")}>Approve</button>
+              <button onClick={() => updateListingStatus(listing.id, "Changes Required")}>Changes</button>
+              <button className="danger" onClick={() => updateListingStatus(listing.id, "Rejected")}>Reject</button>
+            </div>
+          </article>
+        );
+      })}
     </section>
   );
 }
@@ -2052,44 +2197,117 @@ function ImportRows({ data, importValidRows, lastSavedAt }) {
   );
 }
 
-function Settings({ data, lastSavedAt, saveStatus, clearNotifications, resetDemoData, exportData, saveCommonPassword }) {
+function Settings({ data, lastSavedAt, saveStatus, clearNotifications, resetDemoData, exportData, saveCommonPassword, saveRolePermissions, createCallerAccount, runCallerAssignment, setSection }) {
+  const callers = (data.users ?? users).filter((user) => user.role === "Caller");
+  const openDues = data.dueTasks.filter((task) => task.status !== "Closed");
+  const unassignedDues = openDues.filter((task) => !task.callerId);
+  const assignedDues = openDues.length - unassignedDues.length;
+  const editablePermissionRows = Array.isArray(data.rolePermissions) ? data.rolePermissions : permissionRows;
+  const accessRows = editablePermissionRows.map(([feature, admin, owner, caller, buyer]) => ({
+    feature,
+    Admin: admin,
+    Owner: owner,
+    Caller: caller,
+    Buyer: buyer
+  }));
+  const permissionOptions = ["Yes", "No", "Assigned only", "Own fleet", "Optional", "Reports only"];
+  const roleActions = [
+    { role: "Admin", section: "clients", icon: "people", label: "Manage clients", allowed: accessRows.filter((row) => row.Admin !== "No").length },
+    { role: "Owner", section: "marketplace", icon: "store", label: "Open marketplace", allowed: accessRows.filter((row) => row.Owner !== "No").length },
+    { role: "Caller", section: "caller", icon: "phone", label: "Open queue", allowed: accessRows.filter((row) => row.Caller !== "No").length },
+    { role: "Buyer", section: "marketplace", icon: "store", label: "View listings", allowed: accessRows.filter((row) => row.Buyer !== "No").length }
+  ];
+
   return (
-    <section className="stack">
-      <section className="metrics">
-        <Metric label="Storage" value={saveStatus} icon="cloud" />
-        <Metric label="Last saved" value={lastSavedAt ?? "Ready"} icon="check" />
-        <Metric label="Audit logs" value={data.auditLogs.length} icon="chart" />
-        <Metric label="Notifications" value={data.notifications.length} icon="bell" />
-      </section>
-      <Panel title="Common Customer Password">
-        <p className="settings-hint">
-          With this password, <strong>all customers</strong> can log in. After logging in, a customer can change their own password.
-        </p>
-        <form className="common-password-form" onSubmit={saveCommonPassword}>
-          <label>
-            Common password
-            <input name="commonPassword" type="password" placeholder="Set shared customer password" minLength={4} required />
-          </label>
-          <button type="submit"><Icon name="check" />Save common password</button>
-        </form>
-      </Panel>
-      <Panel title="Admin Actions">
-        <div className="actions">
-          <button onClick={exportData}><Icon name="upload" />Export data</button>
-          <button onClick={clearNotifications}><Icon name="bell" />Mark notifications read</button>
-          <button className="danger" onClick={resetDemoData}><Icon name="settings" />Reset saved data</button>
+    <section className="settings-page">
+      <section className="settings-hero">
+        <div>
+          <span>System control</span>
+          <h2>Operations settings</h2>
+          <p>Customer login, caller workload and access rules are controlled from here.</p>
         </div>
-      </Panel>
-      <section className="table-wrap">
-        <table>
-          <thead><tr><th>Permission</th><th>Admin</th><th>Owner</th><th>Caller</th><th>Buyer</th></tr></thead>
-          <tbody>
-            {permissionRows.map(([permission, admin, owner, caller, buyer]) => (
-              <tr key={permission}><td>{permission}</td><td>{admin}</td><td>{owner}</td><td>{caller}</td><td>{buyer}</td></tr>
-            ))}
-          </tbody>
-        </table>
+        <div className="settings-hero-actions">
+          <button type="button" onClick={exportData}><Icon name="upload" />Export</button>
+          <button type="button" onClick={clearNotifications}><Icon name="bell" />Clear alerts</button>
+        </div>
       </section>
+
+      <section className="settings-status-grid">
+        <article><Icon name="cloud" /><span>Storage</span><strong>{saveStatus}</strong></article>
+        <article><Icon name="check" /><span>Last saved</span><strong>{lastSavedAt ?? "Ready"}</strong></article>
+        <article><Icon name="phone" /><span>Assigned dues</span><strong>{assignedDues}/{openDues.length}</strong></article>
+        <article><Icon name="bell" /><span>Unassigned</span><strong>{unassignedDues.length}</strong></article>
+      </section>
+
+      <section className="settings-grid">
+        <article className="settings-card">
+          <div className="settings-card-head"><Icon name="people" /><div><h3>Customer login password</h3><p>Shared password for all customer accounts until they change it.</p></div></div>
+          <form className="settings-form" onSubmit={saveCommonPassword}>
+            <label>Common password<input name="commonPassword" type="password" placeholder="Set shared password" minLength={4} required autoComplete="new-password" /></label>
+            <button type="submit"><Icon name="check" />Save password</button>
+          </form>
+        </article>
+
+        <article className="settings-card">
+          <div className="settings-card-head"><Icon name="phone" /><div><h3>Caller assignment</h3><p>Create callers and assign unassigned dues with one rule.</p></div></div>
+          <form className="settings-form two" onSubmit={createCallerAccount} autoComplete="off">
+            <label>Caller name<input name="newCallerName" placeholder="Caller name" autoComplete="off" /></label>
+            <label>Caller email<input name="newCallerEmail" type="email" placeholder="caller@kuber.local" autoComplete="off" /></label>
+            <label>Caller password<input name="newCallerPassword" type="password" placeholder="Set password" minLength={4} autoComplete="new-password" /></label>
+            <button type="submit"><Icon name="phone" />Create caller</button>
+          </form>
+          <form className="settings-form assignment-form" onSubmit={runCallerAssignment}>
+            <label>Assignment rule<select name="assignmentMode" defaultValue="permanent-client"><option value="permanent-client">Permanent client-wise</option><option value="round-robin">Round-robin</option><option value="location-wise">Location-wise</option><option value="category-wise">Category-wise</option></select></label>
+            <button type="submit"><Icon name="check" />Assign now</button>
+          </form>
+        </article>
+      </section>
+
+      <section className="settings-workload">
+        <div className="settings-section-head">
+          <div><h3>Caller workload</h3><p>Live queue split from open due records.</p></div>
+          <button type="button" onClick={() => setSection("caller")}><Icon name="phone" />Open queue</button>
+        </div>
+        <div className="caller-list">
+          {callers.map((caller) => {
+            const count = openDues.filter((task) => task.callerId === caller.id).length;
+            return <article key={caller.id}><strong>{caller.name}</strong><span>{caller.email}</span><b>{count} active</b></article>;
+          })}
+          {callers.length === 0 && <Empty text="No callers yet. Create a caller above, then run assignment." />}
+        </div>
+      </section>
+
+      <form className="settings-access" onSubmit={saveRolePermissions}>
+        <div className="settings-section-head">
+          <div><h3>Role access</h3><p>Set which role can use each feature, then save permissions.</p></div>
+          <div className="settings-section-actions">
+            <button type="submit"><Icon name="check" />Save permissions</button>
+            <button className="danger" type="button" onClick={resetDemoData}><Icon name="settings" />Reset data</button>
+          </div>
+        </div>
+        <div className="role-card-grid">
+          {roleActions.map((role) => (
+            <article className="role-card" key={role.role}>
+              <div className="role-card-top"><Icon name={role.icon} /><strong>{role.role}</strong><span>{role.allowed} allowed</span></div>
+              <div className="permission-control-list">
+                {accessRows.map((row) => {
+                  const value = row[role.role] ?? "No";
+                  const allowed = value !== "No";
+                  return (
+                    <label className={allowed ? "permission-control on" : "permission-control"} key={`${role.role}-${row.feature}`}>
+                      <span>{row.feature}</span>
+                      <select name={`permission-${role.role}-${row.feature}`} defaultValue={value}>
+                        {permissionOptions.map((option) => <option value={option} key={option}>{option}</option>)}
+                      </select>
+                    </label>
+                  );
+                })}
+              </div>
+              <button type="button" onClick={() => setSection(role.section)}><Icon name={role.icon} />{role.label}</button>
+            </article>
+          ))}
+        </div>
+      </form>
     </section>
   );
 }
@@ -2099,13 +2317,26 @@ const customerNavItems = [
   ["dashboard", "Dashboard", "home"],
   ["fleet",     "My Fleet",  "truck"],
   ["dues",      "Dues",      "calendar"],
+  ["documents", "Documents", "upload"],
   ["marketplace","Marketplace","store"],
+  ["chats", "Chats", "bell"],
 ];
 
 function CustomerPortal({ session, onLogout }) {
   const [section, setSection] = useState("dashboard");
   const [data, setData] = useState(loadData);
   const [loadError, setLoadError] = useState("");
+  const visibleNavItems = useMemo(
+    () => customerNavItems.filter(([key]) => canOpenSection(data, session.role, key)),
+    [data, session.role]
+  );
+  const openPortalSection = (key) => {
+    if (canOpenSection(data, session.role, key)) {
+      setSection(key);
+      return;
+    }
+    setLoadError("Permission denied for this section.");
+  };
 
   useEffect(() => {
     let active = true;
@@ -2142,6 +2373,10 @@ function CustomerPortal({ session, onLogout }) {
     () => data.listings.filter((l) => myVehicles.some((v) => v.id === l.vehicleId)),
     [data, myVehicles]
   );
+  const marketplaceListings = useMemo(
+    () => data.listings.filter((l) => ["Active", "Reserved"].includes(l.status) || myVehicles.some((v) => v.id === l.vehicleId)),
+    [data, myVehicles]
+  );
   const myImportedAssets = useMemo(
     () => (data.clientImports ?? [])
       .filter((item) => item.clientId === customerClientId)
@@ -2155,6 +2390,194 @@ function CustomerPortal({ session, onLogout }) {
   );
 
   const openDues = myDues.filter((t) => t.status !== "Closed");
+  const sectionAllowed = section === "dashboard" || canOpenSection(data, session.role, section);
+  const myDocuments = useMemo(
+    () => (data.documents ?? []).filter((document) => myVehicles.some((vehicle) => vehicle.id === document.vehicleId)),
+    [data, myVehicles]
+  );
+
+  const persistCustomerData = async (nextData, message) => {
+    setData(nextData);
+    try {
+      await syncDataToBackend(nextData);
+    } catch (error) {
+      setLoadError(error.message || "Customer data could not be saved.");
+      return;
+    }
+    setLoadError(message || "");
+  };
+
+  const saveCustomerMarketplaceMessage = async (listingId, messageText) => {
+    if (!canUsePermission(data, session.role, "Owner chat")) {
+      setLoadError("Permission denied for marketplace chat.");
+      return;
+    }
+    const listing = data.listings.find((item) => item.id === listingId);
+    const vehicle = data.vehicles.find((item) => item.id === listing?.vehicleId);
+    const sellerClientId = vehicle?.clientId ?? "";
+    const text = messageText.trim();
+    if (!listing || !text || !customerClientId) return;
+    const now = new Date().toLocaleString("en-IN");
+    const existingThread = (data.marketplaceThreads ?? []).find((thread) => thread.listingId === listingId && thread.buyerClientId === customerClientId);
+    const message = {
+      id: `msg-${Date.now()}`,
+      senderId: session.id,
+      senderName: myClient?.name ?? session.name,
+      text,
+      sentAt: now,
+      read: false
+    };
+    const nextThread = existingThread ? {
+      ...existingThread,
+      status: existingThread.status === "Interested" ? "Negotiating" : existingThread.status,
+      messages: [...(existingThread.messages ?? []), message],
+      updatedAt: now
+    } : {
+      id: `mt-${Date.now()}`,
+      listingId,
+      buyerClientId: customerClientId,
+      sellerClientId,
+      status: "Interested",
+      messages: [message],
+      reported: false,
+      blocked: false,
+      updatedAt: now
+    };
+    const updated = {
+      ...data,
+      marketplaceThreads: [nextThread, ...(data.marketplaceThreads ?? []).filter((thread) => thread.id !== nextThread.id)],
+      notifications: [
+        { id: `n-${Date.now()}`, title: "Marketplace chat", detail: `${message.senderName} sent a message on ${listing.title}`, target: "chats", unread: true },
+        ...(data.notifications ?? [])
+      ],
+      auditLogs: [
+        {
+          id: `a-${Date.now()}`,
+          module: "Marketplace Chat",
+          action: "Message Sent",
+          record: listing.title,
+          oldValue: existingThread?.status ?? "No thread",
+          newValue: nextThread.status,
+          remark: text,
+          at: now
+        },
+        ...(data.auditLogs ?? [])
+      ]
+    };
+    await persistCustomerData(updated, "Message saved");
+  };
+
+  const updateCustomerMarketplaceThreadStatus = async (listingId, status) => {
+    if (!canUsePermission(data, session.role, "Owner chat")) {
+      setLoadError("Permission denied for marketplace chat.");
+      return;
+    }
+    const listing = data.listings.find((item) => item.id === listingId);
+    const vehicle = data.vehicles.find((item) => item.id === listing?.vehicleId);
+    const sellerClientId = vehicle?.clientId ?? "";
+    if (!listing || !customerClientId) return;
+    const now = new Date().toLocaleString("en-IN");
+    const existingThread = (data.marketplaceThreads ?? []).find((thread) => thread.listingId === listingId && thread.buyerClientId === customerClientId);
+    const nextThread = existingThread ? {
+      ...existingThread,
+      status,
+      reported: status === "Reported" ? true : existingThread.reported,
+      blocked: status === "Blocked" ? true : existingThread.blocked,
+      updatedAt: now
+    } : {
+      id: `mt-${Date.now()}`,
+      listingId,
+      buyerClientId: customerClientId,
+      sellerClientId,
+      status,
+      messages: [],
+      reported: status === "Reported",
+      blocked: status === "Blocked",
+      updatedAt: now
+    };
+    const updated = {
+      ...data,
+      marketplaceThreads: [nextThread, ...(data.marketplaceThreads ?? []).filter((thread) => thread.id !== nextThread.id)],
+      listings: status === "Reserved" ? data.listings.map((item) => item.id === listingId ? { ...item, status: "Reserved" } : item) : data.listings,
+      notifications: [
+        { id: `n-${Date.now()}`, title: `Chat ${status}`, detail: listing.title, target: "chats", unread: true },
+        ...(data.notifications ?? [])
+      ]
+    };
+    await persistCustomerData(updated, `Chat ${status}`);
+  };
+
+  const submitCustomerProof = async (task, file) => {
+    if (!canUsePermission(data, session.role, "View own fleet")) {
+      setLoadError("Permission denied for proof upload.");
+      return;
+    }
+    if (!file) return;
+    if (file.size > 8 * 1024 * 1024) {
+      setLoadError("Please upload a PDF or image smaller than 8 MB.");
+      return;
+    }
+    const vehicle = data.vehicles.find((item) => item.id === task.vehicleId);
+    const uploadedAt = new Date().toLocaleString("en-IN");
+    const dataUrl = await readFileAsDataUrl(file);
+    const document = {
+      id: `doc-${Date.now()}`,
+      clientId: task.clientId,
+      vehicleId: task.vehicleId,
+      taskId: task.id,
+      type: task.type === "Insurance" ? "Insurance Policy" : task.type === "EMI" ? "Payment Receipt" : "Compliance Document",
+      fileName: file.name,
+      mimeType: file.type || "application/octet-stream",
+      size: file.size,
+      dataUrl,
+      uploadedBy: myClient?.name ?? session.name,
+      uploadedAt,
+      note: "Submitted from customer web portal"
+    };
+    const verificationItem = {
+      id: `vf-${Date.now()}`,
+      taskId: task.id,
+      submittedBy: myClient?.name ?? session.name,
+      submittedAt: uploadedAt,
+      proofType: document.type,
+      details: [
+        ["Vehicle", vehicle?.regNo ?? "-"],
+        ["Due Type", task.type],
+        ["Due Amount", formatMoney(task.amount)],
+        ["Uploaded File", file.name]
+      ],
+      audit: [
+        ["Previous Status", task.status],
+        ["Current Status", "Proof Pending"],
+        ["Caller Contact", "Paused until Admin decision"],
+        ["Owner Note", "Submitted from customer web portal"]
+      ]
+    };
+    const updated = {
+      ...data,
+      dueTasks: data.dueTasks.map((item) => item.id === task.id ? { ...item, status: "Proof Pending" } : item),
+      verificationItems: [verificationItem, ...(data.verificationItems ?? []).filter((item) => item.taskId !== task.id)],
+      documents: [document, ...(data.documents ?? [])],
+      notifications: [
+        { id: `n-${Date.now()}`, title: `${document.type} submitted`, detail: `${document.uploadedBy} uploaded ${file.name}`, target: "verification", unread: true },
+        ...(data.notifications ?? [])
+      ],
+      auditLogs: [
+        {
+          id: `a-${Date.now()}`,
+          module: "Owner Submission",
+          action: document.type,
+          record: task.id,
+          oldValue: task.status,
+          newValue: "Proof Pending",
+          remark: file.name,
+          at: uploadedAt
+        },
+        ...(data.auditLogs ?? [])
+      ]
+    };
+    await persistCustomerData(updated, "Proof uploaded and sent for Admin verification.");
+  };
 
   return (
     <main className="app-shell">
@@ -2168,11 +2591,11 @@ function CustomerPortal({ session, onLogout }) {
           </div>
         </div>
         <nav className="sidebar-nav" aria-label="Customer sections">
-          {customerNavItems.map((item) => (
+          {visibleNavItems.map((item) => (
             <button
               key={item[0]}
               className={section === item[0] ? "active" : ""}
-              onClick={() => setSection(item[0])}
+              onClick={() => openPortalSection(item[0])}
             >
               <Icon name={item[2]} />
               {item[1]}
@@ -2206,24 +2629,40 @@ function CustomerPortal({ session, onLogout }) {
           </div>
         </header>
 
-        {section === "dashboard" && (
+        {!sectionAllowed && <AccessDenied role={roleAccessName(session.role)} section={section} />}
+        {sectionAllowed && section === "dashboard" && (
           <CustomerDashboard
             client={myClient}
             vehicles={myVehicles}
             dues={myDues}
             openDues={openDues}
             totalLiability={totalLiability}
-            setSection={setSection}
+            setSection={openPortalSection}
           />
         )}
-        {section === "fleet" && (
+        {sectionAllowed && section === "fleet" && (
           <CustomerFleet vehicles={myVehicles} client={myClient} importedAssets={myImportedAssets} />
         )}
-        {section === "dues" && (
-          <CustomerDues dues={myDues} vehicles={myVehicles} />
+        {sectionAllowed && section === "dues" && (
+          <CustomerDues dues={myDues} vehicles={myVehicles} submitCustomerProof={submitCustomerProof} />
         )}
-        {section === "marketplace" && (
-          <CustomerMarketplace listings={myListings} vehicles={myVehicles} />
+        {sectionAllowed && section === "documents" && (
+          <CustomerDocuments documents={myDocuments} vehicles={myVehicles} />
+        )}
+        {sectionAllowed && section === "marketplace" && (
+          <CustomerMarketplace listings={marketplaceListings} vehicles={data.vehicles} myVehicleIds={new Set(myVehicles.map((vehicle) => vehicle.id))} />
+        )}
+        {sectionAllowed && section === "chats" && (
+          <CustomerChats
+            listings={marketplaceListings}
+            vehicles={data.vehicles}
+            clients={data.clients}
+            threads={data.marketplaceThreads ?? []}
+            customerClientId={customerClientId}
+            session={session}
+            saveMessage={saveCustomerMarketplaceMessage}
+            updateThreadStatus={updateCustomerMarketplaceThreadStatus}
+          />
         )}
       </section>
     </main>
@@ -2399,7 +2838,31 @@ function BodyFinanceBlock({ asset }) {
   );
 }
 
-function CustomerDues({ dues, vehicles }) {
+function readFileAsDataUrl(file) {
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onload = () => resolve(String(reader.result || ""));
+    reader.onerror = () => reject(reader.error || new Error("File could not be read."));
+    reader.readAsDataURL(file);
+  });
+}
+
+async function readListingPhotos(files) {
+  const validFiles = Array.from(files || [])
+    .filter((file) => file && typeof file.type === "string" && file.type.startsWith("image/") && file.size <= 5 * 1024 * 1024)
+    .slice(0, 6);
+
+  return Promise.all(validFiles.map(async (file, index) => ({
+    id: `lp-${Date.now()}-${index}`,
+    fileName: file.name || "vehicle-photo.jpg",
+    mimeType: file.type || "image/jpeg",
+    size: file.size || 0,
+    dataUrl: await readFileAsDataUrl(file),
+    uploadedAt: new Date().toLocaleString("en-IN")
+  })));
+}
+
+function CustomerDues({ dues, vehicles, submitCustomerProof }) {
   const open = dues.filter((t) => t.status !== "Closed");
   const closed = dues.filter((t) => t.status === "Closed");
   const totalOpen = open.reduce((s, t) => s + t.amount, 0);
@@ -2436,6 +2899,20 @@ function CustomerDues({ dues, vehicles }) {
                 </div>
                 <div className="due-status"><Badge label={task.status} /></div>
                 <b className="due-amount">{formatMoney(task.amount)}</b>
+                {task.status !== "Proof Pending" && (
+                  <label className="upload-button">
+                    <Icon name="upload" />
+                    Upload proof
+                    <input
+                      type="file"
+                      accept="application/pdf,image/*"
+                      onChange={(event) => {
+                        submitCustomerProof(task, event.target.files?.[0]);
+                        event.target.value = "";
+                      }}
+                    />
+                  </label>
+                )}
               </article>
             );
           })}
@@ -2446,35 +2923,137 @@ function CustomerDues({ dues, vehicles }) {
   );
 }
 
-function CustomerMarketplace({ listings, vehicles }) {
+function CustomerDocuments({ documents, vehicles }) {
   return (
     <section className="stack">
       <div className="customer-section-header">
-        <h2>My Listings</h2>
+        <h2>Uploaded Documents</h2>
+        <span>{documents.length} document{documents.length !== 1 ? "s" : ""}</span>
+      </div>
+      <div className="grid-list">
+        {documents.map((document) => {
+          const vehicle = vehicles.find((item) => item.id === document.vehicleId);
+          return (
+            <article className="asset" key={document.id}>
+              <div className="card-head">
+                <div>
+                  <strong>{document.fileName}</strong>
+                  <span>{document.type} | {vehicle?.regNo ?? "-"}</span>
+                </div>
+                <Badge label={`${Math.max(1, Math.round((document.size || 0) / 1024))} KB`} />
+              </div>
+              <Pair label="Uploaded by" value={document.uploadedBy || "-"} />
+              <Pair label="Uploaded at" value={document.uploadedAt || "-"} />
+              <Pair label="Note" value={document.note || "-"} />
+              {document.dataUrl && (
+                <a className="button-link" href={document.dataUrl} target="_blank" rel="noreferrer">
+                  <Icon name="upload" />
+                  Open file
+                </a>
+              )}
+            </article>
+          );
+        })}
+        {documents.length === 0 && <Empty text="No uploaded documents yet." />}
+      </div>
+    </section>
+  );
+}
+
+function CustomerMarketplace({ listings, vehicles, myVehicleIds }) {
+  return (
+    <section className="stack">
+      <div className="customer-section-header">
+        <h2>Marketplace</h2>
         <span>{listings.length} listing{listings.length !== 1 ? "s" : ""}</span>
       </div>
       <div className="grid-list">
         {listings.map((l) => {
           const v = vehicles.find((x) => x.id === l.vehicleId);
+          const listingPhoto = l.photos?.[0];
+          const mine = myVehicleIds?.has(l.vehicleId);
           return (
             <article className="asset" key={l.id}>
+              {listingPhoto?.dataUrl && <img className="listing-photo" src={listingPhoto.dataUrl} alt={l.title} />}
               <div className="card-head">
                 <div>
                   <strong>{l.title}</strong>
                   <span>{l.location} · {l.condition}</span>
                 </div>
-                <Badge label={l.status} />
+                <Badge label={mine ? "My listing" : l.status} />
               </div>
               <dl>
                 <div><dt>Price</dt><dd>{formatMoney(l.price)}</dd></div>
                 <div><dt>Vehicle</dt><dd>{v?.regNo ?? l.vehicleId}</dd></div>
+                <div><dt>Photos</dt><dd>{l.photos?.length ?? 0}</dd></div>
               </dl>
             </article>
           );
         })}
         {listings.length === 0 && (
-          <Empty text="No marketplace listings for your vehicles yet." />
+          <Empty text="No active marketplace listings yet." />
         )}
+      </div>
+    </section>
+  );
+}
+
+function CustomerChats({ listings, vehicles, clients, threads, customerClientId, session, saveMessage, updateThreadStatus }) {
+  const [drafts, setDrafts] = useState({});
+  const visibleListings = listings.filter((listing) => ["Active", "Reserved"].includes(listing.status) || threads.some((thread) => thread.listingId === listing.id));
+  const threadCount = threads.filter((thread) => thread.buyerClientId === customerClientId || thread.sellerClientId === customerClientId).length;
+
+  return (
+    <section className="stack">
+      <div className="customer-section-header">
+        <h2>Marketplace Chats</h2>
+        <span>{threadCount} thread{threadCount !== 1 ? "s" : ""}</span>
+      </div>
+      <div className="grid-list">
+        {visibleListings.map((listing) => {
+          const vehicle = vehicles.find((item) => item.id === listing.vehicleId);
+          const seller = clients.find((item) => item.id === vehicle?.clientId);
+          const thread = threads.find((item) => item.listingId === listing.id && (item.buyerClientId === customerClientId || item.sellerClientId === customerClientId))
+            ?? threads.find((item) => item.listingId === listing.id);
+          const draft = drafts[listing.id] ?? "";
+          return (
+            <article className="asset chat-card" key={listing.id}>
+              <div className="card-head">
+                <div>
+                  <strong>{listing.title}</strong>
+                  <span>{vehicle?.regNo ?? listing.vehicleId} | {seller?.name ?? "Vehicle Owner"}</span>
+                </div>
+                <Badge label={thread?.status ?? "Interested"} />
+              </div>
+              <div className="chat-history">
+                {(thread?.messages ?? []).slice(-5).map((message) => (
+                  <div className={`chat-bubble ${message.senderId === session.id ? "mine" : ""}`} key={message.id}>
+                    <strong>{message.senderName}</strong>
+                    <span>{message.text}</span>
+                    <small>{message.sentAt}</small>
+                  </div>
+                ))}
+                {!thread?.messages?.length && <Empty text="No messages yet." />}
+              </div>
+              <textarea
+                rows={2}
+                value={draft}
+                placeholder="Type your message"
+                onChange={(event) => setDrafts((current) => ({ ...current, [listing.id]: event.target.value }))}
+              />
+              <div className="actions">
+                <button type="button" onClick={() => {
+                  saveMessage(listing.id, draft);
+                  setDrafts((current) => ({ ...current, [listing.id]: "" }));
+                }}><Icon name="check" />Send</button>
+                <button type="button" onClick={() => updateThreadStatus(listing.id, "Reserved")}>Reserve</button>
+                <button type="button" onClick={() => updateThreadStatus(listing.id, "Reported")}>Report</button>
+                <button className="danger" type="button" onClick={() => updateThreadStatus(listing.id, "Blocked")}>Block</button>
+              </div>
+            </article>
+          );
+        })}
+        {visibleListings.length === 0 && <Empty text="No active chat-ready listings yet." />}
       </div>
     </section>
   );
@@ -2539,6 +3118,18 @@ function Empty({ text }) {
   return <p className="empty">{text}</p>;
 }
 
+function AccessDenied({ role, section }) {
+  return (
+    <section className="access-denied">
+      <Icon name="settings" />
+      <div>
+        <h2>Access blocked</h2>
+        <p>{role} does not have permission for {titleFor(section)}.</p>
+      </div>
+    </section>
+  );
+}
+
 function Badge({ label }) {
   const tone = String(label).toLowerCase().replace(/\s+/g, "-");
   return <span className={`badge ${tone}`}>{label}</span>;
@@ -2550,7 +3141,28 @@ function Icon({ name }) {
 
 function titleFor(section) {
   if (section === "client-profile") return "Client Profile";
-  return navItems.find(([key]) => key === section)?.[1] ?? "Overview";
+  return navItems.find(([key]) => key === section)?.[1] ?? customerNavItems.find(([key]) => key === section)?.[1] ?? "Overview";
+}
+
+function roleAccessName(role) {
+  return role === "Customer" ? "Buyer" : (role || "Buyer");
+}
+
+function permissionValueFor(data, role, feature) {
+  const rows = Array.isArray(data.rolePermissions) ? data.rolePermissions : permissionRows;
+  const row = rows.find((item) => item[0] === feature);
+  const index = rolePermissionIndex[roleAccessName(role)] ?? rolePermissionIndex.Buyer;
+  return row?.[index] ?? "No";
+}
+
+function canUsePermission(data, role, feature) {
+  if (!feature) return true;
+  if (role === "Admin") return true;
+  return permissionValueFor(data, role, feature) !== "No";
+}
+
+function canOpenSection(data, role, section) {
+  return canUsePermission(data, role, sectionPermissionMap[section]);
 }
 
 function getDataClient(data, clientId) {

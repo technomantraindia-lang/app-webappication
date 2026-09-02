@@ -73,6 +73,8 @@ function getNavSections(role) {
 const initialAuditLogs = [];
 const initialNotifications = [];
 const initialCallerActivities = [];
+const initialDocuments = [];
+const initialMarketplaceThreads = [];
 const initialAppData = {
   clients,
   vehicles,
@@ -83,7 +85,9 @@ const initialAppData = {
   clientImports: [],
   callerActivities: initialCallerActivities,
   auditLogs: initialAuditLogs,
-  notifications: initialNotifications
+  notifications: initialNotifications,
+  documents: initialDocuments,
+  marketplaceThreads: initialMarketplaceThreads
 };
 const formatMoney = (value) => `INR ${new Intl.NumberFormat("en-IN", { maximumFractionDigits: 0 }).format(value)}`;
 const liability = (vehicle) => vehicle.principal + vehicle.overdue + vehicle.penalty + vehicle.foreclosure;
@@ -102,6 +106,8 @@ export {
   initialAppData,
   initialAuditLogs,
   initialCallerActivities,
+  initialDocuments,
+  initialMarketplaceThreads,
   initialNotifications,
   liability,
   listings,

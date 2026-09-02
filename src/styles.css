@@ -1379,6 +1379,28 @@ button:disabled {
   color: #F2F7FC;
 }
 
+.upload-button,
+.button-link {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  min-height: 38px;
+  border: 1px solid #F5A623;
+  border-radius: 12px;
+  padding: 0 14px;
+  background: #0C1E38;
+  color: #F2F7FC;
+  font: inherit;
+  font-weight: 900;
+  text-decoration: none;
+  cursor: pointer;
+}
+
+.upload-button input {
+  display: none;
+}
+
 .badge {
   align-self: start;
   background: #0F2240;
@@ -2444,6 +2466,61 @@ details .form-grid {
 .asset.selected-card {
   border-color: #B32D3B;
   box-shadow: 0 14px 32px rgba(2,10,22,0.35);
+}
+
+.listing-photo {
+  aspect-ratio: 16 / 9;
+  background: #102744;
+  border: 1px solid #2A476F;
+  border-radius: 10px;
+  display: block;
+  object-fit: cover;
+  width: 100%;
+}
+
+.chat-card textarea {
+  min-height: 72px;
+  resize: vertical;
+}
+
+.chat-history {
+  display: grid;
+  gap: 8px;
+  max-height: 250px;
+  overflow-y: auto;
+}
+
+.chat-bubble {
+  background: #0F2240;
+  border: 1px solid #2A476F;
+  border-radius: 10px;
+  color: #EDF3FB;
+  display: grid;
+  gap: 4px;
+  justify-self: start;
+  max-width: 88%;
+  padding: 10px;
+}
+
+.chat-bubble.mine {
+  background: #1A5B50;
+  border-color: rgba(65, 184, 131, 0.5);
+  justify-self: end;
+}
+
+.chat-bubble strong {
+  color: #F5A623;
+  font-size: 11px;
+}
+
+.chat-bubble span {
+  color: #EDF3FB;
+  font-size: 13px;
+}
+
+.chat-bubble small {
+  color: #8FA3BD;
+  font-size: 11px;
 }
 
 .card-head {
@@ -4249,11 +4326,360 @@ textarea {
     width: 100%;
   }
 
+  .settings-hero,
+  .settings-section-head {
+    align-items: stretch;
+    flex-direction: column;
+  }
+
+  .settings-status-grid,
+  .settings-grid,
+  .role-card-grid,
+  .settings-form.two {
+    grid-template-columns: 1fr;
+  }
+
   .profile-hero-actions {
     display: grid;
   }
 
-  .common-password-form button {
+.common-password-form button {
     width: 100%;
+  }
+}
+
+.assignment-form {
+  border-top: 1px solid #2A476F;
+  margin-top: 14px;
+  padding-top: 14px;
+}
+
+.settings-page {
+  display: grid;
+  gap: 18px;
+}
+
+.settings-hero {
+  align-items: center;
+  background: linear-gradient(135deg, #0F2240, #122B4D);
+  border: 1px solid #2A476F;
+  border-radius: 14px;
+  display: flex;
+  gap: 18px;
+  justify-content: space-between;
+  padding: 22px;
+}
+
+.settings-hero span,
+.settings-card-head p,
+.settings-section-head p {
+  color: #8FA3BD;
+}
+
+.settings-hero h2,
+.settings-card h3,
+.settings-section-head h3 {
+  color: #F2F7FC;
+  margin: 0;
+}
+
+.settings-hero h2 {
+  font-size: 28px;
+}
+
+.settings-hero p,
+.settings-card-head p,
+.settings-section-head p {
+  margin: 6px 0 0;
+}
+
+.settings-hero-actions,
+.settings-section-head,
+.settings-section-actions,
+.role-card-top,
+.caller-list article {
+  align-items: center;
+  display: flex;
+  gap: 10px;
+  justify-content: space-between;
+}
+
+.settings-status-grid,
+.settings-grid,
+.role-card-grid {
+  display: grid;
+  gap: 14px;
+}
+
+.settings-status-grid {
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+}
+
+.settings-grid {
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+}
+
+.role-card-grid {
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+}
+
+.settings-status-grid article,
+.settings-card,
+.settings-workload,
+.settings-access,
+.role-card {
+  background: #0F2240;
+  border: 1px solid #2A476F;
+  border-radius: 12px;
+  min-width: 0;
+}
+
+.settings-status-grid article {
+  display: grid;
+  gap: 7px;
+  padding: 16px;
+}
+
+.settings-status-grid .icon {
+  color: #F5A623;
+}
+
+.settings-status-grid span {
+  color: #8FA3BD;
+  font-size: 12px;
+  font-weight: 850;
+}
+
+.settings-status-grid strong {
+  color: #F2F7FC;
+  font-size: 22px;
+}
+
+.settings-card,
+.settings-workload,
+.settings-access {
+  padding: 18px;
+}
+
+.settings-access {
+  display: grid;
+  gap: 14px;
+}
+
+.settings-card-head {
+  align-items: flex-start;
+  display: flex;
+  gap: 12px;
+  margin-bottom: 16px;
+}
+
+.settings-card-head .icon {
+  color: #F5A623;
+  height: 22px;
+  width: 22px;
+}
+
+.settings-form {
+  display: grid;
+  gap: 12px;
+}
+
+.settings-form.two {
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+}
+
+.settings-form.two label:first-child {
+  grid-column: 1 / -1;
+}
+
+.settings-form input,
+.settings-form select {
+  background: #081426;
+}
+
+.caller-list {
+  display: grid;
+  gap: 10px;
+  margin-top: 14px;
+}
+
+.caller-list article {
+  background: #081426;
+  border: 1px solid #2A476F;
+  border-radius: 10px;
+  padding: 12px 14px;
+}
+
+.caller-list strong,
+.role-card strong {
+  color: #F2F7FC;
+}
+
+.caller-list span,
+.role-card span {
+  color: #8FA3BD;
+}
+
+.caller-list b {
+  color: #F5A623;
+}
+
+.role-card {
+  display: grid;
+  gap: 14px;
+  padding: 14px;
+}
+
+.role-card-top {
+  justify-content: flex-start;
+}
+
+.role-card-top .icon {
+  color: #F5A623;
+}
+
+.role-card-top span {
+  margin-left: auto;
+}
+
+.permission-chip-list {
+  display: grid;
+  gap: 7px;
+}
+
+.permission-chip {
+  background: #081426;
+  border: 1px solid #2A476F;
+  border-radius: 999px;
+  color: #8FA3BD;
+  font-size: 12px;
+  font-weight: 850;
+  overflow: hidden;
+  padding: 7px 10px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.permission-chip.on {
+  background: rgba(245, 166, 35, 0.12);
+  border-color: rgba(245, 166, 35, 0.42);
+  color: #F2F7FC;
+}
+
+.permission-control-list {
+  display: grid;
+  gap: 8px;
+}
+
+.permission-control {
+  align-items: center;
+  background: #081426;
+  border: 1px solid #2A476F;
+  border-radius: 10px;
+  display: grid;
+  gap: 8px;
+  grid-template-columns: minmax(0, 1fr) 120px;
+  padding: 8px;
+}
+
+.permission-control.on {
+  border-color: rgba(245, 166, 35, 0.42);
+}
+
+.permission-control span {
+  color: #DDE8F4;
+  font-size: 12px;
+  font-weight: 850;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.permission-control select {
+  background: #0F2240;
+  border: 1px solid #2A476F;
+  border-radius: 8px;
+  color: #F2F7FC;
+  font-size: 12px;
+  font-weight: 850;
+  height: 34px;
+  min-width: 0;
+  padding: 0 8px;
+}
+
+.settings-page button {
+  min-height: 42px;
+}
+
+.access-denied {
+  align-items: center;
+  background: #0F2240;
+  border: 1px solid #7F2F3A;
+  border-radius: 12px;
+  color: #F2F7FC;
+  display: flex;
+  gap: 14px;
+  padding: 18px;
+}
+
+.access-denied .icon {
+  color: #F5A623;
+}
+
+.access-denied h2 {
+  font-size: 20px;
+  margin: 0;
+}
+
+.access-denied p {
+  color: #8FA3BD;
+  margin: 5px 0 0;
+}
+
+@media (max-width: 980px) {
+  .settings-status-grid,
+  .role-card-grid {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  .settings-grid {
+    grid-template-columns: 1fr;
+  }
+}
+
+@media (max-width: 680px) {
+  .settings-hero,
+  .settings-section-head {
+    align-items: stretch;
+    flex-direction: column;
+  }
+
+  .settings-hero-actions {
+    display: grid;
+    grid-template-columns: 1fr;
+  }
+
+  .settings-section-actions {
+    display: grid;
+    grid-template-columns: 1fr;
+  }
+
+  .settings-status-grid,
+  .role-card-grid,
+  .settings-form.two {
+    grid-template-columns: 1fr;
+  }
+
+  .settings-form.two label:first-child {
+    grid-column: auto;
+  }
+
+  .caller-list article {
+    align-items: flex-start;
+    flex-direction: column;
+  }
+
+  .permission-control {
+    grid-template-columns: 1fr;
   }
 }
