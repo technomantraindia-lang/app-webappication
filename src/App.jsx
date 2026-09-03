@@ -11,6 +11,9 @@ import {
   initialAppData,
   initialNotifications,
   liability,
+  applyVerifiedCycleToVehicle,
+  buildNextCycleDueTask,
+  initialWhatsAppTemplates,
   permissionRows,
   reportGroups,
   users
@@ -27,6 +30,7 @@ function getApiBase() {
 const API_BASE = getApiBase();
 
 const LOGIN_KEY = "kuber-admin-session";
+const PENDING_SYNC_KEY = "kuber-finance-pending-sync-v1";
 
 function loadSession() {
   try {
@@ -304,9 +308,50 @@ function emptyAppData() {
     verificationItems: [],
     documents: [],
     marketplaceThreads: [],
+    whatsappTemplates: initialWhatsAppTemplates,
+    whatsappLogs: [],
     users: [],
-    rolePermissions: permissionRows
+    rolePermissions: permissionRows,
+    reminderSettings: { enabled: true, intervalHours: 24, windowDays: 30 }
   };
+}
+
+function savePendingSync(data) {
+  try {
+    localStorage.setItem(PENDING_SYNC_KEY, JSON.stringify(data));
+  } catch (error) {
+    console.warn("Unable to cache pending database sync", error);
+  }
+}
+
+function readPendingSync() {
+  try {
+    const raw = localStorage.getItem(PENDING_SYNC_KEY);
+    if (!raw) return null;
+    const parsed = JSON.parse(raw);
+    return parsed && typeof parsed === "object" ? { ...emptyAppData(), ...parsed } : null;
+  } catch (error) {
+    return null;
+  }
+}
+
+function clearPendingSync() {
+  try {
+    localStorage.removeItem(PENDING_SYNC_KEY);
+  } catch (error) {
+    // Storage may be unavailable in private browsing; the database remains the source of truth.
+  }
+}
+
+function parseJsonArray(value) {
+  if (Array.isArray(value)) return value;
+  if (typeof value !== "string" || !value.trim()) return [];
+  try {
+    const parsed = JSON.parse(value);
+    return Array.isArray(parsed) ? parsed : [];
+  } catch (error) {
+    return [];
+  }
 }
 
 function loadData() {
@@ -329,7 +374,7 @@ async function fetchBackendData() {
     }
   };
 
-  const [rawClients, rawVehicles, rawDues, rawListings, rawCaller, rawAudit, rawImports, rawClientImports, rawDocuments, rawMarketplaceThreads, rawUsers, rawSettings] = await Promise.all([
+  const [rawClients, rawVehicles, rawDues, rawListings, rawCaller, rawAudit, rawImports, rawClientImports, rawDocuments, rawMarketplaceThreads, rawUsers, rawSettings, rawWhatsAppTemplates, rawWhatsAppLogs] = await Promise.all([
     fetchJson("/clients"),
     fetchJson("/vehicles"),
     fetchJson("/dues"),
@@ -341,7 +386,9 @@ async function fetchBackendData() {
     fetchJson("/documents", false),
     fetchJson("/marketplace-threads", false),
     fetchJson("/users", false),
-    fetchJson("/settings", false)
+    fetchJson("/settings", false),
+    fetchJson("/whatsapp-templates", false),
+    fetchJson("/whatsapp-logs", false)
   ]);
 
   return {
@@ -367,6 +414,31 @@ async function fetchBackendData() {
       overdue: Number(row.overdue ?? 0),
       penalty: Number(row.penalty ?? 0),
       foreclosure: Number(row.foreclosure ?? 0),
+      loanId: row.loan_id ?? row.loanId ?? "",
+      loanAccount: row.loan_account ?? row.loanAccount ?? "",
+      financier: row.financier ?? "",
+      loanAmount: Number(row.loan_amount ?? row.loanAmount ?? 0),
+      emiAmount: Number(row.emi_amount ?? row.emiAmount ?? 0),
+      interestRate: Number(row.interest_rate ?? row.interestRate ?? 0),
+      tenure: Number(row.tenure ?? 0),
+      paidEmi: Number(row.paid_emi ?? row.paidEmi ?? 0),
+      emiStart: row.emi_start ?? row.emiStart ?? "",
+      emiEnd: row.emi_end ?? row.emiEnd ?? "",
+      emiSchedule: parseJsonArray(row.emi_schedule_json ?? row.emiSchedule),
+      emiHistory: parseJsonArray(row.emi_history_json ?? row.emiHistory),
+      insuranceCompany: row.insurance_company ?? row.insuranceCompany ?? "",
+      insurancePolicyNo: row.insurance_policy_no ?? row.insurancePolicyNo ?? "",
+      insuranceStart: row.insurance_start ?? row.insuranceStart ?? "",
+      insuranceHistory: parseJsonArray(row.insurance_history_json ?? row.insuranceHistory),
+      permitNo: row.permit_no ?? row.permitNo ?? "",
+      permitIssue: row.permit_issue ?? row.permitIssue ?? "",
+      permitType: row.permit_type ?? row.permitType ?? "",
+      nationalPermitExpiry: row.national_permit_expiry ?? row.nationalPermitExpiry ?? "",
+      pucNo: row.puc_no ?? row.pucNo ?? "",
+      pucExpiry: row.puc_expiry ?? row.pucExpiry ?? "",
+      fitnessExpiry: row.fitness_expiry ?? row.fitnessExpiry ?? "",
+      complianceHistory: parseJsonArray(row.compliance_history_json ?? row.complianceHistory),
+      combinationId: row.combination_id ?? row.combinationId ?? "",
       insuranceExpiry: row.insurance_expiry ?? row.insuranceExpiry ?? "",
       permitExpiry: row.permit_expiry ?? row.permitExpiry ?? "",
       status: row.status ?? "Active"
@@ -455,13 +527,33 @@ async function fetchBackendData() {
       blocked: Boolean(row.blocked),
       updatedAt: row.updatedAt ?? row.updated_at ?? ""
     })) : [],
+    whatsappTemplates: Array.isArray(rawWhatsAppTemplates) && rawWhatsAppTemplates.length
+      ? rawWhatsAppTemplates.map((row) => ({ id: row.id, name: row.name, body: row.body, active: row.active !== false }))
+      : initialWhatsAppTemplates,
+    whatsappLogs: Array.isArray(rawWhatsAppLogs) ? rawWhatsAppLogs.map((row) => ({
+      id: row.id,
+      taskId: row.taskId ?? row.task_id ?? "",
+      clientId: row.clientId ?? row.client_id ?? "",
+      callerId: row.callerId ?? row.caller_id ?? "",
+      templateId: row.templateId ?? row.template_id ?? "",
+      phone: row.phone ?? "",
+      body: row.body ?? "",
+      status: row.status ?? "Prepared",
+      createdAt: row.createdAt ?? row.created_at ?? "",
+      updatedAt: row.updatedAt ?? row.updated_at ?? ""
+    })) : [],
     users: Array.isArray(rawUsers) ? rawUsers.map((row) => ({
       id: row.id,
       name: row.name,
       role: row.role,
       email: row.email ?? ""
     })) : [],
-    rolePermissions: Array.isArray(rawSettings?.rolePermissions) ? rawSettings.rolePermissions : permissionRows
+    rolePermissions: Array.isArray(rawSettings?.rolePermissions) ? rawSettings.rolePermissions : permissionRows,
+    reminderSettings: {
+      enabled: rawSettings?.reminderSettings?.enabled !== false,
+      intervalHours: Number(rawSettings?.reminderSettings?.intervalHours ?? 24),
+      windowDays: Number(rawSettings?.reminderSettings?.windowDays ?? 30)
+    }
   };
 }
 
@@ -528,31 +620,58 @@ function AdminApp({ session, onLogout }) {
     const overdue = data.dueTasks.filter((task) => ["Overdue", "Escalated"].includes(task.status));
     const proofPending = data.dueTasks.filter((task) => task.status === "Proof Pending");
     const pendingListings = data.listings.filter((listing) => listing.status === "Submitted");
-    return { totalLiability, openDues, overdue, proofPending, pendingListings };
+    const trucks = data.vehicles.filter((vehicle) => vehicle.type === "Truck");
+    const trailers = data.vehicles.filter((vehicle) => vehicle.type === "Trailer");
+    const financedAssets = data.vehicles.filter((vehicle) => liability(vehicle) > 0);
+    const emiDue = openDues.filter((task) => task.type === "EMI");
+    const emiOverdue = data.dueTasks.filter((task) => task.type === "EMI" && ["Overdue", "Escalated"].includes(task.status));
+    const today = new Date();
+    const inThirtyDays = new Date(today);
+    inThirtyDays.setDate(today.getDate() + 30);
+    const insuranceExpiring = data.vehicles.filter((vehicle) => {
+      if (!vehicle.insuranceExpiry) return false;
+      const expiry = new Date(vehicle.insuranceExpiry);
+      return !Number.isNaN(expiry.getTime()) && expiry >= today && expiry <= inThirtyDays;
+    });
+    const activeCallers = (data.users ?? []).filter((user) => user.role === "Caller");
+    const callsDueToday = openDues.filter((task) => task.callerId && ["Due", "Overdue", "Escalated", "Promise-to-Pay"].includes(task.status));
+    const activeListings = data.listings.filter((listing) => ["Submitted", "Active", "Reserved", "Changes Required"].includes(listing.status));
+    const soldVehicles = data.vehicles.filter((vehicle) => vehicle.status === "Sold");
+    return { totalLiability, openDues, overdue, proofPending, pendingListings, trucks, trailers, financedAssets, emiDue, emiOverdue, insuranceExpiring, activeCallers, callsDueToday, activeListings, soldVehicles };
   }, [data]);
 
   useEffect(() => {
     setSaveStatus("Loading");
-    fetchBackendData()
+    const pendingData = readPendingSync();
+    const load = pendingData
+      ? syncDataToBackend(pendingData).then(() => {
+        clearPendingSync();
+        return fetchBackendData();
+      })
+      : fetchBackendData();
+    if (pendingData) setData(pendingData);
+    load
       .then((backendData) => {
         setData(backendData);
         setSaveStatus("Database");
-        setToast("Database data loaded");
+        setToast(pendingData ? "Pending changes synced to database" : "Database data loaded");
       })
       .catch((err) => {
         setSaveStatus("Error");
-        setToast(err.message || "Database load failed");
+        setToast(pendingData ? "Pending changes are kept on this device. Database sync failed." : (err.message || "Database load failed"));
       });
   }, []);
 
   const persist = (nextData, message = "Saved") => {
     setData(nextData);
+    savePendingSync(nextData);
     setLastSavedAt(new Date().toLocaleTimeString("en-IN", { hour: "2-digit", minute: "2-digit" }));
     setSaveStatus("Saving");
     setToast(message);
     syncDataToBackend(nextData)
       .then((result) => {
         if (result?.ok) {
+          clearPendingSync();
           setSaveStatus("Database");
           setToast("Saved to database");
         }
@@ -633,14 +752,27 @@ function AdminApp({ session, onLogout }) {
 
   const updateTaskStatus = (taskId, status, remark = "Admin web action saved") => {
     const task = data.dueTasks.find((item) => item.id === taskId);
+    const vehicle = task ? data.vehicles.find((item) => item.id === task.vehicleId) : null;
+    const isVerificationApproval = status === "Closed" && ["Proof Pending", "Verification Pending"].includes(task?.status);
+    const nextCycleTask = isVerificationApproval && vehicle ? buildNextCycleDueTask(task, vehicle) : null;
+    const alreadyScheduled = nextCycleTask && data.dueTasks.some((item) => item.id === nextCycleTask.id || (
+      item.vehicleId === nextCycleTask.vehicleId && item.type === nextCycleTask.type && item.dueDate === nextCycleTask.dueDate
+    ));
+    const verifiedAt = new Date().toISOString().slice(0, 10);
     const updated = {
       ...data,
-      dueTasks: data.dueTasks.map((item) => (item.id === taskId ? { ...item, status } : item)),
+      dueTasks: [
+        ...(nextCycleTask && !alreadyScheduled ? [nextCycleTask] : []),
+        ...data.dueTasks.map((item) => (item.id === taskId ? { ...item, status } : item))
+      ],
+      vehicles: isVerificationApproval && vehicle
+        ? data.vehicles.map((item) => item.id === vehicle.id ? applyVerifiedCycleToVehicle(item, task, verifiedAt, nextCycleTask) : item)
+        : data.vehicles,
       verificationItems: ["Closed", "Due"].includes(status)
         ? data.verificationItems.filter((item) => item.taskId !== taskId)
         : data.verificationItems
     };
-    const next = notify(updated, `Verification ${status}`, remark, "verification");
+    const next = notify(updated, `Verification ${status}`, nextCycleTask ? `${remark} Next ${task.type} cycle scheduled for ${nextCycleTask.dueDate}.` : remark, "verification");
     persist(withAudit(next, {
       module: "Verification",
       action: status === "Closed" ? "Approved" : status === "Due" ? "Rejected" : "More Info",
@@ -649,6 +781,26 @@ function AdminApp({ session, onLogout }) {
       newValue: status,
       remark
     }), `Task ${status}`);
+  };
+
+  const assignCallerToTask = async (taskId, callerId) => {
+    setSaveStatus("Saving");
+    try {
+      const response = await fetch(`${API_BASE}/api/caller-assignment/tasks/${encodeURIComponent(taskId)}`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ callerId })
+      });
+      const result = await response.json();
+      if (!response.ok) throw new Error(result.error || "Caller assignment failed");
+      const backendData = await fetchBackendData();
+      setData(backendData);
+      setSaveStatus("Database");
+      setToast(callerId ? `Due assigned to ${backendData.users.find((user) => user.id === callerId)?.name ?? "caller"}` : "Caller assignment removed");
+    } catch (err) {
+      setSaveStatus("Error");
+      setToast(err.message || "Caller assignment failed");
+    }
   };
 
   const saveCallerOutcome = (event, task) => {
@@ -693,6 +845,92 @@ function AdminApp({ session, onLogout }) {
     event.currentTarget.reset();
   };
 
+  const saveWhatsAppTemplates = async (templates) => {
+    setSaveStatus("Saving");
+    try {
+      const response = await fetch(`${API_BASE}/api/whatsapp-templates`, {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ templates })
+      });
+      const result = await response.json().catch(() => ({}));
+      if (!response.ok) throw new Error(result.error || "WhatsApp templates could not be saved.");
+      setData((current) => ({ ...current, whatsappTemplates: result.templates }));
+      setSaveStatus("Database");
+      setToast("WhatsApp templates saved");
+    } catch (error) {
+      setSaveStatus("Error");
+      setToast(error.message || "WhatsApp templates could not be saved.");
+    }
+  };
+
+  const openWhatsApp = async (task, templateId) => {
+    const client = getDataClient(data, task.clientId);
+    const vehicle = getDataVehicle(data, task.vehicleId);
+    const template = (data.whatsappTemplates ?? initialWhatsAppTemplates).find((item) => item.id === templateId && item.active)
+      ?? (data.whatsappTemplates ?? initialWhatsAppTemplates).find((item) => item.active);
+    const phone = String(client?.phone || "").replace(/\D/g, "");
+    if (!client || !phone) {
+      setToast("Customer phone number is missing.");
+      return;
+    }
+    if (!template) {
+      setToast("Create an active WhatsApp template first.");
+      return;
+    }
+    const body = template.body
+      .replaceAll("{{customer}}", client.name || "Customer")
+      .replaceAll("{{vehicle}}", vehicle?.regNo || "vehicle")
+      .replaceAll("{{type}}", task.type || "payment")
+      .replaceAll("{{dueDate}}", formatDisplayDate(task.dueDate))
+      .replaceAll("{{amount}}", formatMoney(task.amount));
+    const status = window.open(`https://wa.me/${phone}?text=${encodeURIComponent(body)}`, "_blank", "noopener,noreferrer") ? "Opened" : "Prepared";
+    const now = new Date().toISOString();
+    const payload = {
+      id: `wa-${Date.now()}`,
+      taskId: task.id,
+      clientId: task.clientId,
+      callerId: task.callerId || session.id || "",
+      templateId: template.id,
+      phone,
+      body,
+      status,
+      createdAt: now,
+      updatedAt: now
+    };
+    try {
+      const response = await fetch(`${API_BASE}/api/whatsapp-logs`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(payload)
+      });
+      const result = await response.json().catch(() => ({}));
+      if (!response.ok) throw new Error(result.error || "WhatsApp log could not be saved.");
+      setData((current) => ({ ...current, whatsappLogs: [result, ...(current.whatsappLogs ?? [])] }));
+      setSaveStatus("Database");
+      setToast(`WhatsApp ${status.toLowerCase()} and logged`);
+    } catch (error) {
+      setSaveStatus("Error");
+      setToast(error.message || "WhatsApp log could not be saved.");
+    }
+  };
+
+  const updateWhatsAppStatus = async (id, status) => {
+    try {
+      const response = await fetch(`${API_BASE}/api/whatsapp-logs/${encodeURIComponent(id)}`, {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ status })
+      });
+      const result = await response.json().catch(() => ({}));
+      if (!response.ok) throw new Error(result.error || "WhatsApp status could not be updated.");
+      setData((current) => ({ ...current, whatsappLogs: (current.whatsappLogs ?? []).map((item) => item.id === id ? result : item) }));
+      setToast(`WhatsApp status updated to ${status}`);
+    } catch (error) {
+      setToast(error.message || "WhatsApp status could not be updated.");
+    }
+  };
+
   const updateListingStatus = (listingId, status) => {
     const listing = data.listings.find((item) => item.id === listingId);
     const updated = {
@@ -716,12 +954,32 @@ function AdminApp({ session, onLogout }) {
     if (!vehicle) return;
     const form = new FormData(event.currentTarget);
     const numberFrom = (name, fallback) => Number(form.get(name)?.toString().replace(/\D/g, "")) || fallback;
+    const decimalFrom = (name, fallback) => {
+      const value = Number(form.get(name)?.toString().replace(/[^\d.-]/g, ""));
+      return Number.isFinite(value) && value >= 0 ? value : fallback;
+    };
+    const loanFields = {
+      loanId: form.get("loanId")?.toString().trim() || vehicle.loanId || "",
+      loanAccount: form.get("loanAccount")?.toString().trim() || vehicle.loanAccount || "",
+      financier: form.get("financier")?.toString().trim() || vehicle.financier || "",
+      loanAmount: decimalFrom("loanAmount", vehicle.loanAmount || 0),
+      emiAmount: decimalFrom("emiAmount", vehicle.emiAmount || 0),
+      interestRate: decimalFrom("interestRate", vehicle.interestRate || 0),
+      tenure: numberFrom("tenure", vehicle.tenure || 0),
+      paidEmi: numberFrom("paidEmi", vehicle.paidEmi || 0),
+      emiStart: form.get("emiStart")?.toString().trim() || vehicle.emiStart || "",
+      emiEnd: form.get("emiEnd")?.toString().trim() || vehicle.emiEnd || ""
+    };
+    const loanPlan = buildLoanPlan(loanFields);
     const nextVehicle = {
       ...vehicle,
       principal: numberFrom("principal", vehicle.principal),
       overdue: numberFrom("overdue", vehicle.overdue),
       penalty: numberFrom("penalty", vehicle.penalty),
       foreclosure: numberFrom("foreclosure", vehicle.foreclosure),
+      ...loanFields,
+      emiSchedule: loanPlan.schedule.length ? loanPlan.schedule : (vehicle.emiSchedule ?? []),
+      emiHistory: loanPlan.history.length ? loanPlan.history : (vehicle.emiHistory ?? []),
       status: form.get("status")?.toString() || vehicle.status
     };
     const updated = {
@@ -737,6 +995,97 @@ function AdminApp({ session, onLogout }) {
       newValue: formatMoney(liability(nextVehicle)),
       remark: "Admin edited closing principal fields from web"
     }), `${vehicle.regNo} updated`);
+  };
+
+  const updateVehicleCompliance = (event, vehicleId) => {
+    event.preventDefault();
+    const vehicle = data.vehicles.find((item) => item.id === vehicleId);
+    if (!vehicle) return;
+    const form = new FormData(event.currentTarget);
+    const textFrom = (name, fallback = "") => form.get(name)?.toString().trim() || fallback;
+    const nextFields = {
+      insuranceCompany: textFrom("insuranceCompany", vehicle.insuranceCompany || ""),
+      insurancePolicyNo: textFrom("insurancePolicyNo", vehicle.insurancePolicyNo || ""),
+      insuranceStart: textFrom("insuranceStart", vehicle.insuranceStart || ""),
+      insuranceExpiry: textFrom("insuranceExpiry", vehicle.insuranceExpiry || ""),
+      insuranceStatus: textFrom("insuranceStatus", "Active"),
+      permitNo: textFrom("permitNo", vehicle.permitNo || ""),
+      permitIssue: textFrom("permitIssue", vehicle.permitIssue || ""),
+      permitExpiry: textFrom("permitExpiry", vehicle.permitExpiry || ""),
+      permitType: textFrom("permitType", vehicle.permitType || ""),
+      nationalPermitExpiry: textFrom("nationalPermitExpiry", vehicle.nationalPermitExpiry || ""),
+      pucNo: textFrom("pucNo", vehicle.pucNo || ""),
+      pucExpiry: textFrom("pucExpiry", vehicle.pucExpiry || ""),
+      fitnessExpiry: textFrom("fitnessExpiry", vehicle.fitnessExpiry || ""),
+      complianceStatus: textFrom("complianceStatus", "Active")
+    };
+    const insuranceRecord = buildInsuranceHistoryEntry(nextFields);
+    const complianceRecords = buildComplianceHistoryEntries(nextFields);
+    const updated = {
+      ...data,
+      vehicles: data.vehicles.map((item) => item.id === vehicleId ? {
+        ...item,
+        insuranceCompany: nextFields.insuranceCompany,
+        insurancePolicyNo: nextFields.insurancePolicyNo,
+        insuranceStart: nextFields.insuranceStart,
+        insuranceExpiry: nextFields.insuranceExpiry,
+        insuranceHistory: insuranceRecord ? upsertHistory(item.insuranceHistory, insuranceRecord, (entry) => `${entry.policyNo}:${entry.expiryDate}`) : (item.insuranceHistory ?? []),
+        permitNo: nextFields.permitNo,
+        permitIssue: nextFields.permitIssue,
+        permitExpiry: nextFields.permitExpiry,
+        permitType: nextFields.permitType,
+        nationalPermitExpiry: nextFields.nationalPermitExpiry,
+        pucNo: nextFields.pucNo,
+        pucExpiry: nextFields.pucExpiry,
+        fitnessExpiry: nextFields.fitnessExpiry,
+        complianceHistory: mergeComplianceHistory(item.complianceHistory, complianceRecords)
+      } : item)
+    };
+    const next = notify(updated, "Insurance and compliance updated", vehicle.regNo, "fleet");
+    persist(withAudit(next, {
+      module: "Fleet",
+      action: "Insurance and Compliance Updated",
+      record: vehicle.regNo,
+      oldValue: `${vehicle.insurancePolicyNo || "No policy"} | ${vehicle.permitExpiry || "No permit"}`,
+      newValue: `${nextFields.insurancePolicyNo || "No policy"} | ${nextFields.permitExpiry || "No permit"}`,
+      remark: "Admin updated policy and compliance records"
+    }), `${vehicle.regNo} compliance saved`);
+  };
+
+  const updateVehicleCombination = (event, vehicleId) => {
+    event.preventDefault();
+    const vehicle = data.vehicles.find((item) => item.id === vehicleId);
+    if (!vehicle) return;
+    const partnerId = new FormData(event.currentTarget).get("partnerVehicleId")?.toString() || "";
+    const partner = data.vehicles.find((item) => item.id === partnerId);
+    if (partner && (partner.clientId !== vehicle.clientId || partner.type === vehicle.type)) {
+      setToast("A combination must link one Truck and one Trailer from the same client.");
+      return;
+    }
+    const oldCombinationIds = new Set([vehicle.combinationId, partner?.combinationId].filter(Boolean));
+    const oldGroup = data.vehicles
+      .filter((item) => item.combinationId && oldCombinationIds.has(item.combinationId))
+      .map((item) => item.id);
+    const combinationId = partner ? (vehicle.combinationId || partner.combinationId || `combo-${Date.now()}`) : "";
+    const linkedIds = new Set([vehicle.id, ...(partner ? [partner.id] : []), ...oldGroup]);
+    const updated = {
+      ...data,
+      vehicles: data.vehicles.map((item) => {
+        if (partner && (item.id === vehicle.id || item.id === partner.id)) return { ...item, combinationId };
+        if (!partner && linkedIds.has(item.id)) return { ...item, combinationId: "" };
+        return item;
+      })
+    };
+    const detail = partner ? `${vehicle.regNo} + ${partner.regNo}` : `${vehicle.regNo} unlinked`;
+    const next = notify(updated, partner ? "Truck and Trailer linked" : "Combination unlinked", detail, "fleet");
+    persist(withAudit(next, {
+      module: "Fleet",
+      action: partner ? "Combination Linked" : "Combination Unlinked",
+      record: vehicle.regNo,
+      oldValue: vehicle.combinationId || "No combination",
+      newValue: combinationId || "No combination",
+      remark: detail
+    }), partner ? `Combination linked: ${detail}` : `${vehicle.regNo} unlinked`);
   };
 
   const createListing = async (event, vehicleId) => {
@@ -774,7 +1123,22 @@ function AdminApp({ session, onLogout }) {
   };
 
   const importValidRows = () => {
-    const validRows = data.importRows.filter((row) => row.status === "Valid" && row.issue !== "Imported and saved");
+    const checkedRows = validateStagedImportRows(data.importRows);
+    const invalidRows = checkedRows.filter((row) => row.status === "Invalid");
+    if (invalidRows.length > 0) {
+      const updated = { ...data, importRows: checkedRows };
+      const next = notify(updated, "Import validation failed", `${invalidRows.length} rows need correction before final import.`, "import");
+      persist(withAudit(next, {
+        module: "Excel Import",
+        action: "Validation Failed",
+        record: "IMP-2026-08-03-001",
+        oldValue: "Staged",
+        newValue: `${invalidRows.length} invalid rows`,
+        remark: "Final import blocked by row-wise validation"
+      }), "Fix invalid rows before final import");
+      return;
+    }
+    const validRows = checkedRows.filter((row) => row.status === "Valid" && row.issue !== "Imported and saved");
     if (validRows.length === 0) return;
     const newClient = {
       id: `c-import-${Date.now()}`,
@@ -821,7 +1185,8 @@ function AdminApp({ session, onLogout }) {
     const file = event.target.files?.[0];
     if (!file) return;
     try {
-      const rows = await parseClientExcelFile(file);
+      const parsedRows = await parseClientExcelFile(file);
+      const rows = validateClientExcelRows(parsedRows, data, clientId);
       if (rows.length === 0) {
         setSaveStatus("Error");
         setToast("No valid rows were found in the Excel file.");
@@ -835,8 +1200,7 @@ function AdminApp({ session, onLogout }) {
         importedAt: new Date().toLocaleString("en-IN"),
         rows
       };
-      const existingRegs = new Set(data.vehicles.filter((vehicle) => vehicle.clientId === clientId).map((vehicle) => normalizeRegNo(baseRegNo(vehicle.regNo))));
-      const importableRows = rows.filter((row) => row.regNo && !isBodyRow(row) && !existingRegs.has(normalizeRegNo(baseRegNo(row.regNo))));
+      const importableRows = rows.filter((row) => row.validationStatus === "Valid" && row.regNo && !isBodyRow(row));
       const importStamp = Date.now();
       const newVehicles = importableRows.map((row, index) => excelRowToVehicle(row, clientId, `v-excel-${importStamp}-${index}`));
       const newDueTasks = importableRows
@@ -849,15 +1213,20 @@ function AdminApp({ session, onLogout }) {
         dueTasks: [...newDueTasks, ...data.dueTasks],
         clientImports: [imported, ...(data.clientImports ?? [])]
       };
-      const next = notify(updated, "Client Excel imported", `${rows.length} records, ${newVehicles.length} vehicles saved for ${client?.name ?? "client"}.`, "clients");
+      const invalidCount = rows.filter((row) => row.validationStatus === "Invalid").length;
+      const next = notify(updated, "Client Excel validated", `${newVehicles.length} vehicles saved, ${invalidCount} rows rejected for ${client?.name ?? "client"}.`, "clients");
       persist(withAudit(next, {
         module: "Client Excel",
-        action: "Imported",
+        action: "Validated and Imported",
         record: client?.name ?? clientId,
         oldValue: "-",
-        newValue: `${rows.length} records, ${newVehicles.length} vehicles`,
-        remark: file.name
+        newValue: `${newVehicles.length} valid rows, ${invalidCount} invalid rows`,
+        remark: `${file.name} | Row-wise validation completed`
       }), "");
+      if (invalidCount > 0) {
+        setSaveStatus("Error");
+        setToast(`${newVehicles.length} valid rows saved. ${invalidCount} rows rejected; see validation details below.`);
+      }
     } catch (error) {
       setSaveStatus("Error");
       setToast(error.message || "Excel import failed");
@@ -1103,6 +1472,32 @@ function AdminApp({ session, onLogout }) {
     }
   };
 
+  const saveReminderSettings = async (event) => {
+    event.preventDefault();
+    const form = new FormData(event.currentTarget);
+    const reminderSettings = {
+      enabled: form.get("reminderEnabled") === "on",
+      intervalHours: Number(form.get("reminderIntervalHours")) || 24,
+      windowDays: Number(form.get("reminderWindowDays")) || 30
+    };
+    setSaveStatus("Saving");
+    try {
+      const response = await fetch(`${API_BASE}/api/reminder-settings`, {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(reminderSettings)
+      });
+      const result = await response.json();
+      if (!response.ok) throw new Error(result.error || "Failed to save reminder settings");
+      setData((current) => ({ ...current, reminderSettings: result.reminderSettings ?? reminderSettings }));
+      setSaveStatus("Database");
+      setToast("Reminder settings updated");
+    } catch (err) {
+      setSaveStatus("Error");
+      setToast(err.message || "Failed to save reminder settings");
+    }
+  };
+
   const saveRolePermissions = async (event) => {
     event.preventDefault();
     const form = new FormData(event.currentTarget);
@@ -1158,6 +1553,28 @@ function AdminApp({ session, onLogout }) {
     } catch (err) {
       setSaveStatus("Error");
       setToast(err.message || "Failed to create caller");
+    }
+  };
+
+  const deleteCallerAccount = async (caller) => {
+    if (!window.confirm(`Delete caller ${caller.name}? Their assigned dues will become unassigned.`)) return;
+    setSaveStatus("Deleting");
+    try {
+      const response = await fetch(`${API_BASE}/api/users/${encodeURIComponent(caller.id)}`, { method: "DELETE" });
+      const result = await response.json().catch(() => ({}));
+      if (!response.ok) throw new Error(result.error || "Caller could not be deleted.");
+      const updated = {
+        ...data,
+        users: (data.users ?? []).filter((item) => item.id !== caller.id),
+        dueTasks: data.dueTasks.map((task) => task.callerId === caller.id ? { ...task, callerId: "" } : task),
+        clients: data.clients.map((client) => client.callerId === caller.id ? { ...client, callerId: "" } : client)
+      };
+      setData(updated);
+      setSaveStatus("Database");
+      setToast(`${caller.name} deleted`);
+    } catch (error) {
+      setSaveStatus("Error");
+      setToast(error.message || "Caller could not be deleted.");
     }
   };
 
@@ -1252,14 +1669,14 @@ function AdminApp({ session, onLogout }) {
         {section === "client-profile" && <ClientProfile data={data} clientId={selectedClientId} backToClients={() => openSection("clients")} importClientExcel={importClientExcel} importClientPdf={importClientPdf} addManualClientVehicle={addManualClientVehicle} deleteClientVehicle={deleteClientVehicle} deleteClientAndAccount={deleteClientAndAccount} />}
         {toast && <button className="toast" onClick={() => setToast("")}>{toast}</button>}
 
-        {section === "fleet" && <Fleet data={data} updateVehicleFinance={updateVehicleFinance} createListing={createListing} />}
-        {section === "dues" && <Dues data={data} updateTaskStatus={updateTaskStatus} />}
+        {section === "fleet" && <Fleet data={data} updateVehicleFinance={updateVehicleFinance} updateVehicleCompliance={updateVehicleCompliance} updateVehicleCombination={updateVehicleCombination} createListing={createListing} />}
+        {section === "dues" && <Dues data={data} updateTaskStatus={updateTaskStatus} assignCallerToTask={assignCallerToTask} />}
         {section === "verification" && <Verification data={data} updateTaskStatus={updateTaskStatus} />}
-        {section === "caller" && <CallerQueue data={data} saveCallerOutcome={saveCallerOutcome} />}
+        {section === "caller" && <CallerQueue data={data} saveCallerOutcome={saveCallerOutcome} openWhatsApp={openWhatsApp} updateWhatsAppStatus={updateWhatsAppStatus} />}
         {section === "marketplace" && <Marketplace data={data} updateListingStatus={updateListingStatus} />}
         {section === "reports" && <Reports data={data} activeReport={activeReport} setActiveReport={setActiveReport} />}
         {section === "import" && <ImportRows data={data} importValidRows={importValidRows} lastSavedAt={lastSavedAt} />}
-        {section === "settings" && <Settings data={data} lastSavedAt={lastSavedAt} saveStatus={saveStatus} clearNotifications={clearNotifications} resetDemoData={resetDemoData} exportData={exportData} saveCommonPassword={saveCommonPassword} saveRolePermissions={saveRolePermissions} createCallerAccount={createCallerAccount} runCallerAssignment={runCallerAssignment} setSection={openSection} />}
+        {section === "settings" && <Settings data={data} lastSavedAt={lastSavedAt} saveStatus={saveStatus} clearNotifications={clearNotifications} resetDemoData={resetDemoData} exportData={exportData} saveCommonPassword={saveCommonPassword} saveReminderSettings={saveReminderSettings} saveRolePermissions={saveRolePermissions} createCallerAccount={createCallerAccount} deleteCallerAccount={deleteCallerAccount} runCallerAssignment={runCallerAssignment} saveWhatsAppTemplates={saveWhatsAppTemplates} setSection={openSection} />}
       </section>
     </main>
   );
@@ -1270,8 +1687,17 @@ function Dashboard({ data, totals, setSection }) {
     <section className="dashboard-page">
       <section className="metrics dashboard-metrics">
         <Metric label="Clients" value={data.clients.length} icon="people" onClick={() => setSection("clients")} />
-        <Metric label="Vehicles" value={data.vehicles.length} icon="truck" />
-        <Metric label="Smart Alert" value={totals.openDues.length} icon="calendar" />
+        <Metric label="Trucks" value={totals.trucks.length} icon="truck" onClick={() => setSection("fleet")} />
+        <Metric label="Trailers" value={totals.trailers.length} icon="truck" onClick={() => setSection("fleet")} />
+        <Metric label="Financed Assets" value={totals.financedAssets.length} icon="chart" onClick={() => setSection("fleet")} />
+        <Metric label="Closing Principal" value={formatMoney(totals.totalLiability)} icon="chart" onClick={() => setSection("fleet")} />
+        <Metric label="EMI Due" value={totals.emiDue.length} icon="calendar" onClick={() => setSection("dues")} />
+        <Metric label="EMI Overdue" value={totals.emiOverdue.length} icon="calendar" onClick={() => setSection("dues")} />
+        <Metric label="Insurance Expiring" value={totals.insuranceExpiring.length} icon="calendar" onClick={() => setSection("dues")} />
+        <Metric label="Active Callers" value={totals.activeCallers.length} icon="phone" onClick={() => setSection("settings")} />
+        <Metric label="Calls Due Today" value={totals.callsDueToday.length} icon="phone" onClick={() => setSection("caller")} />
+        <Metric label="Sale Listings" value={totals.activeListings.length} icon="store" onClick={() => setSection("marketplace")} />
+        <Metric label="Vehicles Sold" value={totals.soldVehicles.length} icon="store" onClick={() => setSection("marketplace")} />
       </section>
       <section className="quick-strip dashboard-actions">
         {[
@@ -1377,6 +1803,7 @@ function ManualVehicleForm({ client, onSubmit }) {
       </section>
       <section>
         <h3>Finance</h3>
+        <label>Loan ID<input name="loanId" placeholder="LOAN-GJ01AB1234" /></label>
         <label>Free/Fin Fin<input name="financeStatus" placeholder="FIN" /></label>
         <label>Financier's Name<input name="financier" placeholder="AXIS" /></label>
         <label>Loan Acc. No<input name="loanAccount" placeholder="CVR001313712427" /></label>
@@ -1435,6 +1862,8 @@ function ClientProfile({ data, clientId, backToClients, importClientExcel, impor
   const visibleDues = clientDues.filter((task) => !isBodyRegNo(getDataVehicle(data, task.vehicleId)?.regNo ?? task.type));
   const clientImports = (data.clientImports ?? []).filter((item) => item.clientId === client.id);
   const importedAssets = clientImports.flatMap((item) => item.rows.map((row) => ({ ...row, importFile: item.fileName, importedAt: item.importedAt })));
+  const validationRows = importedAssets.filter((row) => Array.isArray(row.validationIssues));
+  const invalidImportRows = validationRows.filter((row) => row.validationStatus === "Invalid");
   const caller = users.find((user) => user.id === client.callerId);
   const excelClosingTotal = importedAssets.reduce((sum, row) => sum + autoClosingPrincipal(row), 0);
   const totalClosing = excelClosingTotal > 0
@@ -1516,6 +1945,29 @@ function ClientProfile({ data, clientId, backToClients, importClientExcel, impor
             <span>{importedAssets.length} Excel rows imported at {clientImports[0].importedAt}</span>
           </div>
           <Badge label="Imported" />
+        </section>
+      )}
+
+      {validationRows.length > 0 && (
+        <section className="import-validation-panel">
+          <div className="section-heading">
+            <span>Row-wise validation</span>
+            <h2>{invalidImportRows.length ? `${invalidImportRows.length} rows need correction` : "All imported rows are valid"}</h2>
+          </div>
+          <div className="table-wrap">
+            <table>
+              <thead><tr><th>Reg No</th><th>Status</th><th>Validation result</th></tr></thead>
+              <tbody>
+                {validationRows.map((row, index) => (
+                  <tr key={`${row.regNo}-${row.loanAccount}-${index}`}>
+                    <td>{row.regNo || "-"}</td>
+                    <td><Badge label={row.validationStatus || "Valid"} /></td>
+                    <td>{row.validationIssues?.length ? row.validationIssues.join("; ") : "Ready for import"}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
         </section>
       )}
 
@@ -1621,7 +2073,7 @@ function ClientProfile({ data, clientId, backToClients, importClientExcel, impor
 }
 
 function makeVehicleDetail(vehicle, excelAsset, clientName) {
-  return excelAsset ?? {
+  const fallback = {
     srNo: "-",
     regNo: vehicle.regNo,
     owner: clientName,
@@ -1639,23 +2091,59 @@ function makeVehicleDetail(vehicle, excelAsset, clientName) {
     emiStart: "-",
     emiEnd: "-",
     closingPrincipal: String(vehicle.principal),
-    policyCompany: "-",
-    policyNo: "-",
-    policyStart: "-",
+    policyCompany: vehicle.insuranceCompany || "-",
+    policyNo: vehicle.insurancePolicyNo || "-",
+    policyStart: vehicle.insuranceStart || "-",
     policyEnd: vehicle.insuranceExpiry,
-    pucNo: "-",
-    pucExpired: "-",
-    fitnessExpired: "-",
-    permitNo: "-",
-    permitIssue: "-",
+    pucNo: vehicle.pucNo || "-",
+    pucExpired: vehicle.pucExpiry || "-",
+    fitnessExpired: vehicle.fitnessExpiry || "-",
+    permitNo: vehicle.permitNo || "-",
+    permitIssue: vehicle.permitIssue || "-",
     permitExpired: vehicle.permitExpiry,
-    permitType: "-",
-    nationalPermitExpired: "-",
+    permitType: vehicle.permitType || "-",
+    nationalPermitExpired: vehicle.nationalPermitExpiry || "-",
     remarks: "-"
+  };
+  const detail = excelAsset ?? fallback;
+  const loanFields = {
+    loanId: detail.loanId || vehicle.loanId || `LOAN-${String(vehicle.regNo || vehicle.id).replace(/[^A-Z0-9]/gi, "").toUpperCase()}`,
+    loanAccount: detail.loanAccount && detail.loanAccount !== "-" ? detail.loanAccount : vehicle.loanAccount || "",
+    financier: detail.financier && detail.financier !== "-" ? detail.financier : vehicle.financier || "",
+    loanAmount: detail.loanAmount || vehicle.loanAmount || 0,
+    emiAmount: detail.emiAmount || vehicle.emiAmount || 0,
+    interestRate: detail.interestRate || vehicle.interestRate || 0,
+    tenure: detail.tenure || vehicle.tenure || 0,
+    paidEmi: detail.paidEmi || vehicle.paidEmi || 0,
+    emiStart: detail.emiStart && detail.emiStart !== "-" ? detail.emiStart : vehicle.emiStart || "",
+    emiEnd: detail.emiEnd && detail.emiEnd !== "-" ? detail.emiEnd : vehicle.emiEnd || ""
+  };
+  const plan = {
+    schedule: vehicle.emiSchedule?.length ? vehicle.emiSchedule : buildLoanPlan(loanFields).schedule,
+    history: vehicle.emiHistory?.length ? vehicle.emiHistory : buildLoanPlan(loanFields).history
+  };
+  return {
+    ...detail,
+    ...loanFields,
+    ...plan,
+    policyCompany: detail.policyCompany && detail.policyCompany !== "-" ? detail.policyCompany : vehicle.insuranceCompany || "",
+    policyNo: detail.policyNo && detail.policyNo !== "-" ? detail.policyNo : vehicle.insurancePolicyNo || "",
+    policyStart: detail.policyStart && detail.policyStart !== "-" ? detail.policyStart : vehicle.insuranceStart || "",
+    policyEnd: detail.policyEnd && detail.policyEnd !== "-" ? detail.policyEnd : vehicle.insuranceExpiry || "",
+    pucNo: detail.pucNo && detail.pucNo !== "-" ? detail.pucNo : vehicle.pucNo || "",
+    pucExpired: detail.pucExpired && detail.pucExpired !== "-" ? detail.pucExpired : vehicle.pucExpiry || "",
+    fitnessExpired: detail.fitnessExpired && detail.fitnessExpired !== "-" ? detail.fitnessExpired : vehicle.fitnessExpiry || "",
+    permitNo: detail.permitNo && detail.permitNo !== "-" ? detail.permitNo : vehicle.permitNo || "",
+    permitIssue: detail.permitIssue && detail.permitIssue !== "-" ? detail.permitIssue : vehicle.permitIssue || "",
+    permitExpired: detail.permitExpired && detail.permitExpired !== "-" ? detail.permitExpired : vehicle.permitExpiry || "",
+    permitType: detail.permitType && detail.permitType !== "-" ? detail.permitType : vehicle.permitType || "",
+    nationalPermitExpired: detail.nationalPermitExpired && detail.nationalPermitExpired !== "-" ? detail.nationalPermitExpired : vehicle.nationalPermitExpiry || "",
+    insuranceHistory: vehicle.insuranceHistory ?? [],
+    complianceHistory: vehicle.complianceHistory ?? []
   };
 }
 
-function Fleet({ data, updateVehicleFinance, createListing }) {
+function Fleet({ data, updateVehicleFinance, updateVehicleCompliance, updateVehicleCombination, createListing }) {
   return (
     <section className="grid-list">
       {data.vehicles.map((vehicle) => (
@@ -1672,18 +2160,63 @@ function Fleet({ data, updateVehicleFinance, createListing }) {
             <div><dt>Type</dt><dd>{vehicle.type}</dd></div>
             <div><dt>KM</dt><dd>{vehicle.km.toLocaleString("en-IN")}</dd></div>
             <div><dt>Closing</dt><dd>{formatMoney(liability(vehicle))}</dd></div>
-            <div><dt>Insurance</dt><dd>{formatDisplayDate(vehicle.insuranceExpiry)}</dd></div>
-            <div><dt>Permit</dt><dd>{formatDisplayDate(vehicle.permitExpiry)}</dd></div>
+            <div><dt>Insurance</dt><dd>{vehicle.insurancePolicyNo || formatDisplayDate(vehicle.insuranceExpiry)}</dd></div>
+            <div><dt>Permit</dt><dd>{vehicle.permitNo || formatDisplayDate(vehicle.permitExpiry)}</dd></div>
+            <div><dt>Combination</dt><dd>{vehicle.combinationId || "Unlinked"}</dd></div>
           </dl>
           <details>
             <summary>Edit finance</summary>
             <form className="form-grid compact-form" onSubmit={(event) => updateVehicleFinance(event, vehicle.id)}>
+              <label>Loan ID<input name="loanId" defaultValue={vehicle.loanId || `LOAN-${String(vehicle.regNo || vehicle.id).replace(/[^A-Z0-9]/gi, "").toUpperCase()}`} /></label>
+              <label>Loan Account<input name="loanAccount" defaultValue={vehicle.loanAccount || ""} /></label>
+              <label>Financier<input name="financier" defaultValue={vehicle.financier || ""} /></label>
+              <label>Loan Amount<input name="loanAmount" type="number" min="0" step="0.01" defaultValue={vehicle.loanAmount || ""} /></label>
+              <label>EMI Amount<input name="emiAmount" type="number" min="0" step="0.01" defaultValue={vehicle.emiAmount || ""} /></label>
+              <label>Interest %<input name="interestRate" type="number" min="0" step="0.01" defaultValue={vehicle.interestRate || ""} /></label>
+              <label>Tenure (months)<input name="tenure" type="number" min="0" step="1" defaultValue={vehicle.tenure || ""} /></label>
+              <label>Paid EMI<input name="paidEmi" type="number" min="0" step="1" defaultValue={vehicle.paidEmi || ""} /></label>
+              <label>EMI Start<input name="emiStart" type="date" defaultValue={vehicle.emiStart || ""} /></label>
+              <label>EMI End<input name="emiEnd" type="date" defaultValue={vehicle.emiEnd || ""} /></label>
               <label>Principal<input name="principal" defaultValue={vehicle.principal} /></label>
               <label>Overdue<input name="overdue" defaultValue={vehicle.overdue} /></label>
               <label>Penalty<input name="penalty" defaultValue={vehicle.penalty} /></label>
               <label>Foreclosure<input name="foreclosure" defaultValue={vehicle.foreclosure} /></label>
               <label>Status<select name="status" defaultValue={vehicle.status}><option>Active</option><option>Listed</option><option>Sold</option></select></label>
               <button type="submit"><Icon name="check" />Save finance</button>
+            </form>
+          </details>
+          <details>
+            <summary>Link Truck + Trailer</summary>
+            <form className="form-grid compact-form" onSubmit={(event) => updateVehicleCombination(event, vehicle.id)}>
+              <label className="span-2">Partner asset
+                <select name="partnerVehicleId" defaultValue={data.vehicles.find((item) => item.combinationId && item.combinationId === vehicle.combinationId && item.id !== vehicle.id)?.id || ""}>
+                  <option value="">No linked partner</option>
+                  {data.vehicles.filter((item) => item.clientId === vehicle.clientId && item.type !== vehicle.type).map((item) => (
+                    <option key={item.id} value={item.id}>{item.regNo} - {item.type}{item.combinationId ? ` (${item.combinationId})` : ""}</option>
+                  ))}
+                </select>
+              </label>
+              <button type="submit"><Icon name="check" />Save combination</button>
+            </form>
+          </details>
+          <details>
+            <summary>Edit insurance & compliance</summary>
+            <form className="form-grid compact-form" onSubmit={(event) => updateVehicleCompliance(event, vehicle.id)}>
+              <label>Insurance Company<input name="insuranceCompany" defaultValue={vehicle.insuranceCompany || ""} /></label>
+              <label>Policy No.<input name="insurancePolicyNo" defaultValue={vehicle.insurancePolicyNo || ""} /></label>
+              <label>Policy Start<input name="insuranceStart" type="date" defaultValue={vehicle.insuranceStart || ""} /></label>
+              <label>Policy Expiry<input name="insuranceExpiry" type="date" defaultValue={vehicle.insuranceExpiry || ""} /></label>
+              <label>Policy Status<select name="insuranceStatus" defaultValue="Active"><option>Active</option><option>Expired</option><option>Pending Verification</option></select></label>
+              <label>Permit No.<input name="permitNo" defaultValue={vehicle.permitNo || ""} /></label>
+              <label>Permit Issue<input name="permitIssue" type="date" defaultValue={vehicle.permitIssue || ""} /></label>
+              <label>Permit Expiry<input name="permitExpiry" type="date" defaultValue={vehicle.permitExpiry || ""} /></label>
+              <label>Permit Type<input name="permitType" defaultValue={vehicle.permitType || ""} /></label>
+              <label>National Permit Expiry<input name="nationalPermitExpiry" type="date" defaultValue={vehicle.nationalPermitExpiry || ""} /></label>
+              <label>PUC No.<input name="pucNo" defaultValue={vehicle.pucNo || ""} /></label>
+              <label>PUC Expiry<input name="pucExpiry" type="date" defaultValue={vehicle.pucExpiry || ""} /></label>
+              <label>Fitness Expiry<input name="fitnessExpiry" type="date" defaultValue={vehicle.fitnessExpiry || ""} /></label>
+              <label>Compliance Status<select name="complianceStatus" defaultValue="Active"><option>Active</option><option>Expired</option><option>Pending Verification</option></select></label>
+              <button type="submit"><Icon name="check" />Save policy & compliance</button>
             </form>
           </details>
           <details>
@@ -1702,7 +2235,8 @@ function Fleet({ data, updateVehicleFinance, createListing }) {
   );
 }
 
-function Dues({ data, updateTaskStatus }) {
+function Dues({ data, updateTaskStatus, assignCallerToTask }) {
+  const callers = (data.users ?? []).filter((user) => user.role === "Caller");
   const smartAlerts = buildSmartAlerts(data);
   const openTasks = data.dueTasks.filter((task) => task.status !== "Closed");
   const expiredAlerts = smartAlerts.filter((alert) => alert.status === "Expired");
@@ -1760,7 +2294,7 @@ function Dues({ data, updateTaskStatus }) {
         </div>
         <div className="dues-list">
           {data.dueTasks.map((task) => (
-            <DueCard key={task.id} task={task} data={data} updateTaskStatus={updateTaskStatus} />
+            <DueCard key={task.id} task={task} data={data} callers={callers} updateTaskStatus={updateTaskStatus} assignCallerToTask={assignCallerToTask} />
           ))}
         </div>
       </section>
@@ -1768,7 +2302,7 @@ function Dues({ data, updateTaskStatus }) {
   );
 }
 
-function DueCard({ task, data, updateTaskStatus, compact = false }) {
+function DueCard({ task, data, callers = [], updateTaskStatus, assignCallerToTask, compact = false }) {
   const client = getDataClient(data, task.clientId);
   const vehicle = getDataVehicle(data, task.vehicleId);
   return (
@@ -1781,6 +2315,15 @@ function DueCard({ task, data, updateTaskStatus, compact = false }) {
       <div className="due-copy">
         <strong>{task.type} - {vehicle?.regNo}</strong>
         <span>{client?.name} | Due {formatDisplayDate(task.dueDate)}</span>
+        {!compact && (
+          <div className="due-assignment">
+            <label htmlFor={`caller-${task.id}`}>Caller</label>
+            <select id={`caller-${task.id}`} value={task.callerId || ""} disabled={!callers.length || task.status === "Closed"} onChange={(event) => assignCallerToTask(task.id, event.target.value)}>
+              <option value="">Unassigned</option>
+              {callers.map((caller) => <option value={caller.id} key={caller.id}>{caller.name}</option>)}
+            </select>
+          </div>
+        )}
       </div>
       <div className="due-status"><Badge label={task.status} /></div>
       <b className="due-amount">{formatMoney(task.amount)}</b>
@@ -2004,8 +2547,88 @@ function VehicleDetailModal({ row, onClose }) {
             ["Remarks", row.remarks]
           ]} />
         </div>
+        <div className="loan-ledger-grid">
+          <LoanSchedulePanel schedule={row.emiSchedule ?? []} />
+          <LoanHistoryPanel history={row.emiHistory ?? []} />
+        </div>
+        <div className="loan-ledger-grid compliance-ledger-grid">
+          <InsuranceHistoryPanel history={row.insuranceHistory ?? []} />
+          <ComplianceHistoryPanel history={row.complianceHistory ?? []} />
+        </div>
       </section>
     </div>
+  );
+}
+
+function LoanSchedulePanel({ schedule }) {
+  return (
+    <article className="loan-ledger-panel">
+      <div className="loan-ledger-head"><h3>EMI Schedule</h3><span>{schedule.length} instalments</span></div>
+      {schedule.length > 0 ? (
+        <div className="loan-ledger-table">
+          <div className="loan-ledger-row loan-ledger-row-head"><span>#</span><span>Due date</span><span>Amount</span><span>Status</span></div>
+          {schedule.map((entry) => (
+            <div className="loan-ledger-row" key={`${entry.installment}-${entry.dueDate}`}>
+              <span>{entry.installment}</span>
+              <span>{formatDisplayDate(entry.dueDate)}</span>
+              <span>{formatPlainMoney(entry.amount)}</span>
+              <Badge label={entry.status} />
+            </div>
+          ))}
+        </div>
+      ) : <Empty text="Loan tenure and EMI details are not saved yet." />}
+    </article>
+  );
+}
+
+function LoanHistoryPanel({ history }) {
+  return (
+    <article className="loan-ledger-panel">
+      <div className="loan-ledger-head"><h3>EMI Payment History</h3><span>{history.length} paid</span></div>
+      {history.length > 0 ? (
+        <div className="loan-ledger-table">
+          <div className="loan-ledger-row loan-ledger-row-head"><span>#</span><span>Paid on</span><span>Amount</span><span>Reference</span></div>
+          {history.map((entry) => (
+            <div className="loan-ledger-row" key={`${entry.installment}-${entry.paidOn}-${entry.reference}`}>
+              <span>{entry.installment}</span>
+              <span>{formatDisplayDate(entry.paidOn)}</span>
+              <span>{formatPlainMoney(entry.amount)}</span>
+              <span>{entry.reference || "-"}</span>
+            </div>
+          ))}
+        </div>
+      ) : <Empty text="No EMI payment history saved yet." />}
+    </article>
+  );
+}
+
+function InsuranceHistoryPanel({ history }) {
+  return (
+    <article className="loan-ledger-panel">
+      <div className="loan-ledger-head"><h3>Insurance History</h3><span>{history.length} policies</span></div>
+      {history.length > 0 ? history.map((entry) => (
+        <div className="history-entry" key={`${entry.policyNo}-${entry.expiryDate}`}>
+          <strong>{entry.company} · {entry.policyNo}</strong>
+          <span>{formatDisplayDate(entry.startDate)} to {formatDisplayDate(entry.expiryDate)}</span>
+          <Badge label={entry.status} />
+        </div>
+      )) : <Empty text="No insurance policy history saved yet." />}
+    </article>
+  );
+}
+
+function ComplianceHistoryPanel({ history }) {
+  return (
+    <article className="loan-ledger-panel">
+      <div className="loan-ledger-head"><h3>Compliance History</h3><span>{history.length} records</span></div>
+      {history.length > 0 ? history.map((entry) => (
+        <div className="history-entry" key={`${entry.kind}-${entry.documentNo}-${entry.expiryDate}`}>
+          <strong>{entry.kind} · {entry.documentNo}</strong>
+          <span>{entry.issueDate ? `${formatDisplayDate(entry.issueDate)} to ` : "Expiry "}{formatDisplayDate(entry.expiryDate)}</span>
+          <Badge label={entry.status} />
+        </div>
+      )) : <Empty text="No compliance history saved yet." />}
+    </article>
   );
 }
 
@@ -2056,37 +2679,55 @@ function Verification({ data, updateTaskStatus }) {
   );
 }
 
-function CallerQueue({ data, saveCallerOutcome }) {
+function CallerQueue({ data, saveCallerOutcome, openWhatsApp, updateWhatsAppStatus }) {
+  const whatsappTemplates = (data.whatsappTemplates ?? initialWhatsAppTemplates).filter((item) => item.active);
+  const whatsappLogs = data.whatsappLogs ?? [];
   return (
-    <section className="grid-list caller-grid">
-      {data.dueTasks.map((task) => {
-        const client = getDataClient(data, task.clientId);
-        const history = data.callerActivities.filter((item) => item.taskId === task.id);
-        return (
-          <article className="asset" key={task.id}>
-            <div className="card-head">
-              <div>
-                <strong>{client?.name}</strong>
-                <span>{task.type} | {formatDisplayDate(task.dueDate)} | {task.priority}</span>
+    <section className="stack">
+      <section className="grid-list caller-grid">
+        {data.dueTasks.map((task) => {
+          const client = getDataClient(data, task.clientId);
+          const history = data.callerActivities.filter((item) => item.taskId === task.id);
+          return (
+            <article className="asset" key={task.id}>
+              <div className="card-head">
+                <div>
+                  <strong>{client?.name || "Unknown customer"}</strong>
+                  <span>{task.type} | {formatDisplayDate(task.dueDate)} | {task.priority}</span>
+                </div>
+                <b>{formatMoney(task.amount)}</b>
               </div>
-              <b>{formatMoney(task.amount)}</b>
-            </div>
-            <form className="form-grid compact-form" onSubmit={(event) => saveCallerOutcome(event, task)}>
-              <label>Outcome<select name="outcome">{callerOutcomes.map((item) => <option key={item.outcome}>{item.outcome}</option>)}</select></label>
-              <label>Channel<select name="channel"><option>Call</option><option>WhatsApp</option><option>Manual</option></select></label>
-              <label>Expected amount<input name="expectedAmount" placeholder="INR 54,000" /></label>
-              <label>Next follow-up<input name="nextFollowUp" placeholder="2026-08-12" /></label>
-              <label className="span-2">Notes<textarea name="notes" placeholder="Customer note" /></label>
-              <button type="submit"><Icon name="phone" />Save outcome</button>
-            </form>
-            <div className="history">
-              {history.slice(0, 2).map((item) => (
-                <p key={item.id}><strong>{item.outcome}</strong><span>{item.notes}</span></p>
-              ))}
-            </div>
-          </article>
-        );
-      })}
+              <div className="whatsapp-action">
+                <label>WhatsApp template<select defaultValue={whatsappTemplates[0]?.id || ""} disabled={!whatsappTemplates.length} id={`wa-template-${task.id}`}>
+                  {whatsappTemplates.map((template) => <option key={template.id} value={template.id}>{template.name}</option>)}
+                </select></label>
+                <button type="button" disabled={!whatsappTemplates.length} onClick={() => openWhatsApp(task, document.getElementById(`wa-template-${task.id}`)?.value)}><Icon name="phone" />Open WhatsApp</button>
+              </div>
+              <form className="form-grid compact-form" onSubmit={(event) => saveCallerOutcome(event, task)}>
+                <label>Outcome<select name="outcome">{callerOutcomes.map((item) => <option key={item.outcome}>{item.outcome}</option>)}</select></label>
+                <label>Channel<select name="channel"><option>Call</option><option>WhatsApp</option><option>Manual</option></select></label>
+                <label>Expected amount<input name="expectedAmount" placeholder="INR 54,000" /></label>
+                <label>Next follow-up<input name="nextFollowUp" placeholder="2026-08-12" /></label>
+                <label className="span-2">Notes<textarea name="notes" placeholder="Customer note" /></label>
+                <button type="submit"><Icon name="phone" />Save outcome</button>
+              </form>
+              <div className="history">
+                {history.slice(0, 2).map((item) => (
+                  <p key={item.id}><strong>{item.outcome}</strong><span>{item.notes}</span></p>
+                ))}
+              </div>
+            </article>
+          );
+        })}
+      </section>
+      <section className="settings-workload whatsapp-log-panel">
+        <div className="settings-section-head"><div><h3>WhatsApp message log</h3><p>Track the handoff and delivery status for each customer message.</p></div><strong>{whatsappLogs.length} messages</strong></div>
+        {whatsappLogs.length ? <div className="whatsapp-log-list">{whatsappLogs.slice(0, 30).map((log) => {
+          const client = getDataClient(data, log.clientId);
+          const task = data.dueTasks.find((item) => item.id === log.taskId);
+          return <article key={log.id}><div><strong>{client?.name || log.phone}</strong><span>{task?.type || "Task"} | {log.createdAt ? new Date(log.createdAt).toLocaleString("en-IN") : ""}</span><small>{log.body}</small></div><label>Status<select value={log.status} onChange={(event) => updateWhatsAppStatus(log.id, event.target.value)}><option>Prepared</option><option>Opened</option><option>Sent</option><option>Delivered</option><option>Failed</option></select></label></article>;
+        })}</div> : <Empty text="No WhatsApp messages logged yet." />}
+      </section>
     </section>
   );
 }
@@ -2197,7 +2838,7 @@ function ImportRows({ data, importValidRows, lastSavedAt }) {
   );
 }
 
-function Settings({ data, lastSavedAt, saveStatus, clearNotifications, resetDemoData, exportData, saveCommonPassword, saveRolePermissions, createCallerAccount, runCallerAssignment, setSection }) {
+function Settings({ data, lastSavedAt, saveStatus, clearNotifications, resetDemoData, exportData, saveCommonPassword, saveReminderSettings, saveRolePermissions, createCallerAccount, deleteCallerAccount, runCallerAssignment, saveWhatsAppTemplates, setSection }) {
   const callers = (data.users ?? users).filter((user) => user.role === "Caller");
   const openDues = data.dueTasks.filter((task) => task.status !== "Closed");
   const unassignedDues = openDues.filter((task) => !task.callerId);
@@ -2261,6 +2902,19 @@ function Settings({ data, lastSavedAt, saveStatus, clearNotifications, resetDemo
             <button type="submit"><Icon name="check" />Assign now</button>
           </form>
         </article>
+
+        <article className="settings-card">
+          <div className="settings-card-head"><Icon name="calendar" /><div><h3>Reminder automation</h3><p>Control when EMI, insurance and compliance reminders are created.</p></div></div>
+          <form className="settings-form" onSubmit={saveReminderSettings} key={JSON.stringify(data.reminderSettings ?? {})}>
+            <label className="settings-checkbox"><input name="reminderEnabled" type="checkbox" defaultChecked={data.reminderSettings?.enabled !== false} /><span>Enable automated monitoring</span></label>
+            <div className="settings-form two reminder-fields">
+              <label>Scan frequency (hours)<input name="reminderIntervalHours" type="number" min="1" max="168" step="1" defaultValue={data.reminderSettings?.intervalHours ?? 24} required /></label>
+              <label>Reminder window (days)<input name="reminderWindowDays" type="number" min="1" max="180" step="1" defaultValue={data.reminderSettings?.windowDays ?? 30} required /></label>
+            </div>
+            <button type="submit"><Icon name="check" />Save reminder settings</button>
+          </form>
+        </article>
+        <WhatsAppTemplatesSettings templates={data.whatsappTemplates ?? initialWhatsAppTemplates} saveTemplates={saveWhatsAppTemplates} />
       </section>
 
       <section className="settings-workload">
@@ -2271,7 +2925,7 @@ function Settings({ data, lastSavedAt, saveStatus, clearNotifications, resetDemo
         <div className="caller-list">
           {callers.map((caller) => {
             const count = openDues.filter((task) => task.callerId === caller.id).length;
-            return <article key={caller.id}><strong>{caller.name}</strong><span>{caller.email}</span><b>{count} active</b></article>;
+            return <article className="caller-workload-row" key={caller.id}><div className="caller-workload-identity"><span className="caller-avatar"><Icon name="phone" /></span><div><strong>{caller.name}</strong><span>{caller.email}</span></div></div><div className="caller-workload-meta"><b>{count} active</b><button className="caller-delete-button" type="button" title={`Delete ${caller.name}`} aria-label={`Delete ${caller.name}`} onClick={() => deleteCallerAccount(caller)}><Icon name="trash" />Delete</button></div></article>;
           })}
           {callers.length === 0 && <Empty text="No callers yet. Create a caller above, then run assignment." />}
         </div>
@@ -2313,6 +2967,35 @@ function Settings({ data, lastSavedAt, saveStatus, clearNotifications, resetDemo
 }
 
 // ─── Customer portal (post-login, shown when logging in as Customer) ────────
+function WhatsAppTemplatesSettings({ templates, saveTemplates }) {
+  const [drafts, setDrafts] = useState(templates);
+
+  useEffect(() => setDrafts(templates), [templates]);
+
+  const updateDraft = (id, field, value) => {
+    setDrafts((current) => current.map((item) => item.id === id ? { ...item, [field]: value } : item));
+  };
+
+  const addDraft = () => {
+    setDrafts((current) => [...current, { id: `custom-${Date.now()}`, name: "New template", body: "Hello {{customer}}, please contact Kuber Finance regarding {{vehicle}}.", active: true }]);
+  };
+
+  return (
+    <article className="settings-card whatsapp-template-card">
+      <div className="settings-card-head"><Icon name="phone" /><div><h3>WhatsApp templates</h3><p>Use customer, vehicle, type, dueDate and amount placeholders in reusable messages.</p></div></div>
+      <div className="whatsapp-template-list">
+        {drafts.map((template) => <div className="whatsapp-template-row" key={template.id}>
+          <label>Name<input value={template.name} onChange={(event) => updateDraft(template.id, "name", event.target.value)} /></label>
+          <label className="template-body">Message<textarea value={template.body} onChange={(event) => updateDraft(template.id, "body", event.target.value)} /></label>
+          <label className="settings-checkbox template-active"><input type="checkbox" checked={template.active} onChange={(event) => updateDraft(template.id, "active", event.target.checked)} /><span>Active</span></label>
+          <button className="danger" type="button" onClick={() => setDrafts((current) => current.filter((item) => item.id !== template.id))}><Icon name="trash" />Remove</button>
+        </div>)}
+      </div>
+      <div className="settings-section-actions"><button type="button" onClick={addDraft}><Icon name="plus" />Add template</button><button type="button" onClick={() => saveTemplates(drafts)}><Icon name="check" />Save templates</button></div>
+    </article>
+  );
+}
+
 const customerNavItems = [
   ["dashboard", "Dashboard", "home"],
   ["fleet",     "My Fleet",  "truck"],
@@ -2355,8 +3038,8 @@ function CustomerPortal({ session, onLogout }) {
     };
   }, []);
 
-  const myClient = data.clients.find((c) => c.id === session.clientId)
-    ?? data.clients.find((c) => session.email && c.email?.toLowerCase() === session.email.toLowerCase())
+  const myClient = data.clients.find((c) => session.email && c.email?.trim().toLowerCase() === session.email.trim().toLowerCase())
+    ?? data.clients.find((c) => c.id === session.clientId)
     ?? data.clients.find((c) => c.name?.toLowerCase() === session.name?.toLowerCase())
     ?? clients.find((c) => c.id === session.clientId);
   const customerClientId = myClient?.id ?? session.clientId;
@@ -2805,7 +3488,18 @@ function CustomerFleet({ vehicles, client, importedAssets = [] }) {
               <div><dt>Closing</dt><dd>{formatMoney(liability(v))}</dd></div>
               <div><dt>Insurance</dt><dd>{formatDisplayDate(v.insuranceExpiry)}</dd></div>
               <div><dt>Permit</dt><dd>{formatDisplayDate(v.permitExpiry)}</dd></div>
+              <div><dt>Combination</dt><dd>{v.combinationId || "Unlinked"}</dd></div>
             </dl>
+            <div className="customer-loan-summary">
+              <div><span>Loan ID</span><strong>{v.loanId || `LOAN-${String(v.regNo || v.id).replace(/[^A-Z0-9]/gi, "").toUpperCase()}`}</strong></div>
+              <div><span>Loan account</span><strong>{v.loanAccount || "-"}</strong></div>
+              <div><span>EMI</span><strong>{v.emiAmount ? formatMoney(v.emiAmount) : "-"}</strong></div>
+              <div><span>Progress</span><strong>{v.tenure ? `${v.paidEmi || 0} / ${v.tenure} paid` : "-"}</strong></div>
+            </div>
+            <div className="customer-loan-history">
+              <span>Payment history</span>
+              <strong>{v.emiHistory?.length || 0} verified payments · {v.emiSchedule?.length || 0} schedule rows</strong>
+            </div>
             {bodyByReg.get(normalizeRegNo(baseRegNo(v.regNo))) ? (
               <BodyFinanceBlock asset={bodyByReg.get(normalizeRegNo(baseRegNo(v.regNo)))} />
             ) : (
@@ -3221,6 +3915,112 @@ function parseDisplayDate(value) {
   return Number.isNaN(date.getTime()) ? null : date;
 }
 
+function buildLoanPlan(fields) {
+  const tenure = Math.min(Math.max(Math.round(toNumber(fields.tenure)), 0), 360);
+  const emiAmount = toNumber(fields.emiAmount);
+  const loanAmount = toNumber(fields.loanAmount);
+  if (tenure <= 0 || emiAmount <= 0) return { schedule: [], history: [] };
+  const start = parseDisplayDate(fields.emiStart) || new Date();
+  const rate = toNumber(fields.interestRate);
+  const paidEmi = Math.min(Math.max(Math.round(toNumber(fields.paidEmi)), 0), tenure);
+  let openingPrincipal = loanAmount;
+  const schedule = [];
+  const history = [];
+  const toIsoDate = (date) => {
+    const year = date.getFullYear();
+    const month = String(date.getMonth() + 1).padStart(2, "0");
+    const day = String(date.getDate()).padStart(2, "0");
+    return `${year}-${month}-${day}`;
+  };
+  for (let index = 0; index < tenure; index += 1) {
+    const dueDate = new Date(start.getFullYear(), start.getMonth() + index, start.getDate());
+    const interest = Math.round((openingPrincipal * rate) / 1200 * 100) / 100;
+    const principal = Math.min(Math.max(emiAmount - interest, 0), Math.max(openingPrincipal, 0));
+    const closing = Math.max(openingPrincipal - principal, 0);
+    const paid = index < paidEmi;
+    const entry = {
+      installment: index + 1,
+      dueDate: toIsoDate(dueDate),
+      amount: emiAmount,
+      principal,
+      interest,
+      status: paid ? "Paid" : "Due"
+    };
+    schedule.push(entry);
+    if (paid) {
+      history.push({
+        installment: index + 1,
+        amount: emiAmount,
+        paidOn: toIsoDate(dueDate),
+        reference: `EMI-${String(index + 1).padStart(3, "0")}`,
+        status: "Verified"
+      });
+    }
+    openingPrincipal = closing;
+  }
+  return { schedule, history };
+}
+
+function complianceStatusForDate(dateText) {
+  const date = parseDisplayDate(dateText);
+  if (!date) return "Pending Verification";
+  const today = new Date();
+  today.setHours(0, 0, 0, 0);
+  return date < today ? "Expired" : "Active";
+}
+
+function buildInsuranceHistoryEntry(fields) {
+  if (!fields.insuranceCompany && !fields.insurancePolicyNo && !fields.insuranceExpiry) return null;
+  return {
+    company: fields.insuranceCompany || "Unknown insurer",
+    policyNo: fields.insurancePolicyNo || "Not provided",
+    startDate: fields.insuranceStart || "",
+    expiryDate: fields.insuranceExpiry || "",
+    status: fields.insuranceStatus === "Pending Verification"
+      ? "Pending Verification"
+      : fields.insuranceStatus === "Expired"
+        ? "Expired"
+        : complianceStatusForDate(fields.insuranceExpiry)
+  };
+}
+
+function buildComplianceHistoryEntries(fields) {
+  const records = [
+    ["Permit", fields.permitNo, fields.permitIssue, fields.permitExpiry],
+    ["PUC", fields.pucNo, "", fields.pucExpiry],
+    ["Fitness", "", "", fields.fitnessExpiry],
+    ["Road Tax", "", "", fields.nationalPermitExpiry]
+  ];
+  return records
+    .filter(([, documentNo, issueDate, expiryDate]) => documentNo || issueDate || expiryDate)
+    .map(([kind, documentNo, issueDate, expiryDate]) => ({
+      kind,
+      documentNo: documentNo || "Not provided",
+      issueDate: issueDate || "",
+      expiryDate: expiryDate || "",
+      status: fields.complianceStatus === "Pending Verification"
+        ? "Pending Verification"
+        : fields.complianceStatus === "Expired"
+          ? "Expired"
+          : complianceStatusForDate(expiryDate)
+    }));
+}
+
+function upsertHistory(history, entry, keyFor) {
+  const current = Array.isArray(history) ? history : [];
+  const key = keyFor(entry);
+  const index = current.findIndex((item) => keyFor(item) === key);
+  if (index < 0) return [...current, entry];
+  return current.map((item, itemIndex) => itemIndex === index ? entry : item);
+}
+
+function mergeComplianceHistory(history, entries) {
+  return entries.reduce(
+    (result, entry) => upsertHistory(result, entry, (item) => `${item.kind}:${item.documentNo}:${item.expiryDate}`),
+    Array.isArray(history) ? history : []
+  );
+}
+
 function smartAlertStatus(daysLeft) {
   if (daysLeft < 0) return "Expired";
   if (daysLeft === 0) return "Today";
@@ -3375,6 +4175,7 @@ function mapManualVehicleForm(form) {
     model: formText(form, "model"),
     yearOfMfg: formText(form, "yearOfMfg"),
     regDate: formText(form, "regDate"),
+    loanId: formText(form, "loanId"),
     financeStatus: formText(form, "financeStatus"),
     financier: formText(form, "financier"),
     loanAccount: formText(form, "loanAccount"),
@@ -3415,6 +4216,24 @@ function baseRegNo(value) {
 }
 
 function excelRowToVehicle(row, clientId, id) {
+  const loanPlan = buildLoanPlan(row);
+  const insuranceHistory = buildInsuranceHistoryEntry({
+    insuranceCompany: row.policyCompany || "",
+    insurancePolicyNo: row.policyNo || "",
+    insuranceStart: row.policyStart || "",
+    insuranceExpiry: row.policyEnd || "",
+    insuranceStatus: "Active"
+  });
+  const complianceHistory = buildComplianceHistoryEntries({
+    permitNo: row.permitNo || "",
+    permitIssue: row.permitIssue || "",
+    permitExpiry: row.permitExpired || "",
+    nationalPermitExpiry: row.nationalPermitExpired || "",
+    pucNo: row.pucNo || "",
+    pucExpiry: row.pucExpired || "",
+    fitnessExpiry: row.fitnessExpired || "",
+    complianceStatus: "Active"
+  });
   return {
     id,
     clientId,
@@ -3428,6 +4247,30 @@ function excelRowToVehicle(row, clientId, id) {
     overdue: 0,
     penalty: 0,
     foreclosure: 0,
+    loanId: row.loanId || `LOAN-${String(row.regNo || id).replace(/[^A-Z0-9]/gi, "").toUpperCase()}`,
+    loanAccount: row.loanAccount || "",
+    financier: row.financier || "",
+    loanAmount: toNumber(row.loanAmount),
+    emiAmount: toNumber(row.emiAmount),
+    interestRate: toNumber(row.interestRate),
+    tenure: toNumber(row.tenure),
+    paidEmi: toNumber(row.paidEmi),
+    emiStart: row.emiStart || "",
+    emiEnd: row.emiEnd || "",
+    emiSchedule: loanPlan.schedule,
+    emiHistory: loanPlan.history,
+    insuranceCompany: row.policyCompany || "",
+    insurancePolicyNo: row.policyNo || "",
+    insuranceStart: row.policyStart || "",
+    insuranceHistory: insuranceHistory ? [insuranceHistory] : [],
+    permitNo: row.permitNo || "",
+    permitIssue: row.permitIssue || "",
+    permitType: row.permitType || "",
+    nationalPermitExpiry: row.nationalPermitExpired || "",
+    pucNo: row.pucNo || "",
+    pucExpiry: row.pucExpired || "",
+    fitnessExpiry: row.fitnessExpired || "",
+    complianceHistory,
     insuranceExpiry: row.policyEnd || "-",
     permitExpiry: row.permitExpired || row.nationalPermitExpired || "-",
     status: "Active"
@@ -3461,6 +4304,108 @@ async function parseClientExcelFile(file) {
   return bodyRows
     .map((row) => mapClientExcelRow(row))
     .filter((row) => row.regNo || row.loanAccount || row.policyNo);
+}
+
+function validateClientExcelRows(rows, data, clientId) {
+  const seenRegistrations = new Set();
+  const seenLoanAccounts = new Set();
+  const existingVehicles = data.vehicles.filter((vehicle) => vehicle.clientId === clientId);
+  const existingRegistrations = new Set(existingVehicles.map((vehicle) => normalizeRegNo(baseRegNo(vehicle.regNo))));
+  const existingLoanAccounts = new Set(existingVehicles.map((vehicle) => normalizeAgreement(vehicle.loanAccount)));
+  const hasValue = (value) => String(value ?? "").trim() !== "" && String(value ?? "").trim() !== "-";
+  const addDateIssue = (issues, label, value) => {
+    if (hasValue(value) && !parseDisplayDate(value)) issues.push(`${label} is invalid`);
+  };
+
+  return rows.map((row) => {
+    const issues = [];
+    const registration = normalizeRegNo(baseRegNo(row.regNo));
+    const isBody = isBodyRow(row);
+    if (!hasValue(row.regNo)) {
+      issues.push("Registration number is required");
+    } else if (!/^[A-Z0-9][A-Z0-9 -]{3,23}$/.test(registration)) {
+      issues.push("Registration number format is invalid");
+    }
+    const registrationKey = `${registration}:${isBody ? "body" : "vehicle"}`;
+    if (registration && seenRegistrations.has(registrationKey)) issues.push("Duplicate registration in this file");
+    if (registration) seenRegistrations.add(registrationKey);
+    if (registration && !isBody && existingRegistrations.has(registration)) issues.push("Registration already exists for this client");
+    if (!hasValue(row.owner)) issues.push("Owner is required");
+
+    const financeStatus = String(row.financeStatus || "").trim().toUpperCase().replace(/\s+/g, "");
+    const hasFinanceValues = [row.financier, row.loanAccount, row.loanAmount, row.emiAmount, row.tenure, row.paidEmi, row.emiStart, row.emiEnd]
+      .some(hasValue);
+    const isLoanFree = financeStatus === "FREE" || financeStatus === "LOANFREE" || financeStatus === "N/A";
+    if (hasValue(row.financeStatus) && !["FIN", "FINANCED", "FREE", "LOANFREE", "N/A"].includes(financeStatus)) {
+      issues.push("Finance status must be FIN or FREE");
+    }
+    if (hasFinanceValues && !isLoanFree) {
+      if (!hasValue(row.financier)) issues.push("Financier is required for a financed row");
+      if (!hasValue(row.loanAccount)) issues.push("Loan account is required for a financed row");
+      if (hasValue(row.loanAccount) && !isValidAgreementValue(row.loanAccount)) issues.push("Loan account is invalid");
+      if (toNumber(row.loanAmount) <= 0) issues.push("Loan amount must be greater than zero");
+      if (toNumber(row.emiAmount) <= 0) issues.push("EMI amount must be greater than zero");
+      if (!Number.isInteger(toNumber(row.tenure)) || toNumber(row.tenure) <= 0) issues.push("Tenure must be a positive whole number");
+      if (!Number.isInteger(toNumber(row.paidEmi)) || toNumber(row.paidEmi) < 0 || toNumber(row.paidEmi) > toNumber(row.tenure)) {
+        issues.push("Paid EMI must be between zero and tenure");
+      }
+      if (!hasValue(row.emiStart) || !hasValue(row.emiEnd)) issues.push("EMI start and end dates are required");
+      addDateIssue(issues, "EMI start date", row.emiStart);
+      addDateIssue(issues, "EMI end date", row.emiEnd);
+      if (parseDisplayDate(row.emiStart) && parseDisplayDate(row.emiEnd) && parseDisplayDate(row.emiEnd) < parseDisplayDate(row.emiStart)) {
+        issues.push("EMI end date cannot be before start date");
+      }
+    }
+    const loanAccount = normalizeAgreement(row.loanAccount);
+    if (loanAccount && seenLoanAccounts.has(loanAccount)) issues.push("Duplicate loan account in this file");
+    if (loanAccount) seenLoanAccounts.add(loanAccount);
+    if (loanAccount && existingLoanAccounts.has(loanAccount)) issues.push("Loan account already exists for this client");
+
+    const hasPolicy = [row.policyCompany, row.policyNo, row.policyStart, row.policyEnd].some(hasValue);
+    if (hasPolicy) {
+      if (!hasValue(row.policyCompany)) issues.push("Insurance company is required");
+      if (!hasValue(row.policyNo)) issues.push("Policy number is required");
+      if (!hasValue(row.policyStart) || !hasValue(row.policyEnd)) issues.push("Policy start and expiry dates are required");
+    }
+    addDateIssue(issues, "Registration date", row.regDate);
+    addDateIssue(issues, "Policy start date", row.policyStart);
+    addDateIssue(issues, "Policy expiry date", row.policyEnd);
+    addDateIssue(issues, "PUC expiry date", row.pucExpired);
+    addDateIssue(issues, "Fitness expiry date", row.fitnessExpired);
+    addDateIssue(issues, "Permit issue date", row.permitIssue);
+    addDateIssue(issues, "Permit expiry date", row.permitExpired);
+    addDateIssue(issues, "National permit expiry date", row.nationalPermitExpired);
+    if (hasValue(row.permitNo) && !hasValue(row.permitExpired) && !hasValue(row.nationalPermitExpired)) issues.push("Permit expiry date is required when permit number is present");
+    if (hasValue(row.pucExpired) && !hasValue(row.pucNo)) issues.push("PUC number is required when PUC expiry is present");
+
+    return {
+      ...row,
+      validationStatus: issues.length === 0 ? "Valid" : "Invalid",
+      validationIssues: issues
+    };
+  });
+}
+
+function validateStagedImportRows(rows) {
+  const seenRegistrations = new Set();
+  const seenLoanAccounts = new Set();
+  return rows.map((row) => {
+    if (row.issue === "Imported and saved") return row;
+    const issues = [];
+    const registration = normalizeRegNo(baseRegNo(row.regNo));
+    const loanAccount = normalizeAgreement(row.loanAccount);
+    if (!registration) issues.push("Registration number is required");
+    else if (!/^[A-Z0-9][A-Z0-9 -]{3,23}$/.test(registration)) issues.push("Registration number format is invalid");
+    if (!['Truck', 'Trailer'].includes(row.assetType)) issues.push("Asset type must be Truck or Trailer");
+    if (!String(row.client || "").trim()) issues.push("Client is required");
+    if (!String(row.lender || "").trim()) issues.push("Lender is required");
+    if (!isValidAgreementValue(row.loanAccount)) issues.push("Loan account is invalid");
+    if (registration && seenRegistrations.has(registration)) issues.push("Duplicate registration in this batch");
+    if (registration) seenRegistrations.add(registration);
+    if (loanAccount && seenLoanAccounts.has(loanAccount)) issues.push("Duplicate loan account in this batch");
+    if (loanAccount) seenLoanAccounts.add(loanAccount);
+    return { ...row, status: issues.length ? "Invalid" : "Valid", issue: issues.join("; ") || "Ready for final import" };
+  });
 }
 
 function mapClientExcelRow(row) {
