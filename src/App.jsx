@@ -49,6 +49,10 @@ function clearSession() {
   sessionStorage.removeItem(LOGIN_KEY);
 }
 
+function authHeaders(token, headers = {}) {
+  return token ? { ...headers, Authorization: `Bearer ${token}` } : headers;
+}
+
 // ─── Login Page (role selection: Admin or Customer) ──────────────────────────
 function LoginPage({ onLogin }) {
   const [role, setRole] = useState("admin");
@@ -358,10 +362,10 @@ function loadData() {
   return emptyAppData();
 }
 
-async function fetchBackendData() {
+async function fetchBackendData(token) {
   const fetchJson = async (path, required = true) => {
     try {
-      const response = await fetch(`${API_BASE}/api${path}`);
+      const response = await fetch(`${API_BASE}/api${path}`, { headers: authHeaders(token) });
       if (!response.ok) {
         const result = await response.json().catch(() => ({}));
         if (required) throw new Error(formatBackendError(result, response.status));
@@ -374,7 +378,7 @@ async function fetchBackendData() {
     }
   };
 
-  const [rawClients, rawVehicles, rawDues, rawListings, rawCaller, rawAudit, rawImports, rawClientImports, rawDocuments, rawMarketplaceThreads, rawUsers, rawSettings, rawWhatsAppTemplates, rawWhatsAppLogs] = await Promise.all([
+  const [rawClients, rawVehicles, rawDues, rawListings, rawCaller, rawAudit, rawImports, rawClientImports, rawDocuments, rawVerificationItems, rawSaleClosings, rawMarketplaceThreads, rawUsers, rawSettings, rawWhatsAppTemplates, rawWhatsAppLogs] = await Promise.all([
     fetchJson("/clients"),
     fetchJson("/vehicles"),
     fetchJson("/dues"),
@@ -384,6 +388,8 @@ async function fetchBackendData() {
     fetchJson("/imports", false),
     fetchJson("/client-imports", false),
     fetchJson("/documents", false),
+    fetchJson("/verification-items", false),
+    fetchJson("/sale-closings", false),
     fetchJson("/marketplace-threads", false),
     fetchJson("/users", false),
     fetchJson("/settings", false),
@@ -462,7 +468,8 @@ async function fetchBackendData() {
       location: row.location ?? "",
       status: row.status ?? "Active",
       condition: row.condition_note ?? row.condition ?? "Good",
-      photos: Array.isArray(row.photos) ? row.photos : []
+      photos: Array.isArray(row.photos) ? row.photos : [],
+      createdAt: row.created_at ?? row.createdAt ?? ""
     })) : [],
     callerActivities: Array.isArray(rawCaller) ? rawCaller.map((row) => ({
       id: row.id,
@@ -516,6 +523,29 @@ async function fetchBackendData() {
       uploadedAt: row.uploadedAt ?? row.uploaded_at ?? "",
       note: row.note ?? ""
     })) : [],
+    verificationItems: Array.isArray(rawVerificationItems) ? rawVerificationItems.map((row) => ({
+      id: row.id,
+      taskId: row.taskId ?? row.task_id ?? "",
+      submittedBy: row.submittedBy ?? row.submitted_by ?? "",
+      submittedAt: row.submittedAt ?? row.submitted_at ?? "",
+      proofType: row.proofType ?? row.proof_type ?? "Proof",
+      details: Array.isArray(row.details) ? row.details : [],
+      audit: Array.isArray(row.audit) ? row.audit : []
+    })) : [],
+    saleClosings: Array.isArray(rawSaleClosings) ? rawSaleClosings.map((row) => ({
+      id: row.id,
+      listingId: row.listingId ?? row.listing_id ?? "",
+      vehicleId: row.vehicleId ?? row.vehicle_id ?? "",
+      clientId: row.clientId ?? row.client_id ?? "",
+      estimatedAmount: Number(row.estimatedAmount ?? row.estimated_amount ?? 0),
+      bankConfirmedAmount: Number(row.bankConfirmedAmount ?? row.bank_confirmed_amount ?? 0),
+      foreclosureStatement: row.foreclosureStatement ?? row.foreclosure_statement ?? null,
+      bankNoc: row.bankNoc ?? row.bank_noc ?? null,
+      ownershipTransfer: row.ownershipTransfer ?? row.ownership_transfer ?? null,
+      soldDate: row.soldDate ?? row.sold_date ?? "",
+      status: row.status ?? "Estimated",
+      updatedAt: row.updatedAt ?? row.updated_at ?? ""
+    })) : [],
     marketplaceThreads: Array.isArray(rawMarketplaceThreads) ? rawMarketplaceThreads.map((row) => ({
       id: row.id,
       listingId: row.listingId ?? row.listing_id ?? "",
@@ -565,10 +595,10 @@ function formatBackendError(result, status) {
   return result?.message || result?.error || `Backend request failed with status ${status}.`;
 }
 
-async function syncDataToBackend(data) {
+async function syncDataToBackend(data, token) {
   const response = await fetch(`${API_BASE}/api/sync`, {
     method: "POST",
-    headers: { "Content-Type": "application/json" },
+    headers: authHeaders(token, { "Content-Type": "application/json" }),
     body: JSON.stringify({
       clients: data.clients ?? [],
       vehicles: data.vehicles ?? [],
@@ -579,6 +609,8 @@ async function syncDataToBackend(data) {
       importRows: data.importRows ?? [],
       clientImports: data.clientImports ?? [],
       documents: data.documents ?? [],
+      verificationItems: data.verificationItems ?? [],
+      saleClosings: data.saleClosings ?? [],
       marketplaceThreads: data.marketplaceThreads ?? []
     })
   });
@@ -644,11 +676,11 @@ function AdminApp({ session, onLogout }) {
     setSaveStatus("Loading");
     const pendingData = readPendingSync();
     const load = pendingData
-      ? syncDataToBackend(pendingData).then(() => {
+      ? syncDataToBackend(pendingData, session.token).then(() => {
         clearPendingSync();
-        return fetchBackendData();
+        return fetchBackendData(session.token);
       })
-      : fetchBackendData();
+      : fetchBackendData(session.token);
     if (pendingData) setData(pendingData);
     load
       .then((backendData) => {
@@ -668,7 +700,7 @@ function AdminApp({ session, onLogout }) {
     setLastSavedAt(new Date().toLocaleTimeString("en-IN", { hour: "2-digit", minute: "2-digit" }));
     setSaveStatus("Saving");
     setToast(message);
-    syncDataToBackend(nextData)
+    syncDataToBackend(nextData, session.token)
       .then((result) => {
         if (result?.ok) {
           clearPendingSync();
@@ -718,7 +750,7 @@ function AdminApp({ session, onLogout }) {
     try {
       const response = await fetch(`${API_BASE}/api/users`, {
         method: "POST",
-        headers: { "Content-Type": "application/json" },
+        headers: authHeaders(session.token, { "Content-Type": "application/json" }),
         body: JSON.stringify({ name, email })
       });
       const result = await response.json();
@@ -788,12 +820,12 @@ function AdminApp({ session, onLogout }) {
     try {
       const response = await fetch(`${API_BASE}/api/caller-assignment/tasks/${encodeURIComponent(taskId)}`, {
         method: "POST",
-        headers: { "Content-Type": "application/json" },
+        headers: authHeaders(session.token, { "Content-Type": "application/json" }),
         body: JSON.stringify({ callerId })
       });
       const result = await response.json();
       if (!response.ok) throw new Error(result.error || "Caller assignment failed");
-      const backendData = await fetchBackendData();
+      const backendData = await fetchBackendData(session.token);
       setData(backendData);
       setSaveStatus("Database");
       setToast(callerId ? `Due assigned to ${backendData.users.find((user) => user.id === callerId)?.name ?? "caller"}` : "Caller assignment removed");
@@ -850,7 +882,7 @@ function AdminApp({ session, onLogout }) {
     try {
       const response = await fetch(`${API_BASE}/api/whatsapp-templates`, {
         method: "PUT",
-        headers: { "Content-Type": "application/json" },
+        headers: authHeaders(session.token, { "Content-Type": "application/json" }),
         body: JSON.stringify({ templates })
       });
       const result = await response.json().catch(() => ({}));
@@ -901,7 +933,7 @@ function AdminApp({ session, onLogout }) {
     try {
       const response = await fetch(`${API_BASE}/api/whatsapp-logs`, {
         method: "POST",
-        headers: { "Content-Type": "application/json" },
+        headers: authHeaders(session.token, { "Content-Type": "application/json" }),
         body: JSON.stringify(payload)
       });
       const result = await response.json().catch(() => ({}));
@@ -919,7 +951,7 @@ function AdminApp({ session, onLogout }) {
     try {
       const response = await fetch(`${API_BASE}/api/whatsapp-logs/${encodeURIComponent(id)}`, {
         method: "PATCH",
-        headers: { "Content-Type": "application/json" },
+        headers: authHeaders(session.token, { "Content-Type": "application/json" }),
         body: JSON.stringify({ status })
       });
       const result = await response.json().catch(() => ({}));
@@ -946,6 +978,66 @@ function AdminApp({ session, onLogout }) {
       newValue: status,
       remark: "Admin marketplace decision saved"
     }), `Listing ${status}`);
+  };
+
+  const saveSaleClosing = async (event, listingId) => {
+    event.preventDefault();
+    const listing = data.listings.find((item) => item.id === listingId);
+    const vehicle = data.vehicles.find((item) => item.id === listing?.vehicleId);
+    if (!listing || !vehicle) return;
+    const form = event.currentTarget;
+    const formData = new FormData(form);
+    const bankConfirmedAmount = Number(formData.get("bankConfirmedAmount") || 0);
+    const soldDate = String(formData.get("soldDate") || "");
+    const existing = (data.saleClosings ?? []).find((item) => item.listingId === listingId);
+    const readClosingFile = async (name, previous) => {
+      const file = formData.get(name);
+      if (!(file instanceof File) || !file.size) return previous ?? null;
+      if (file.size > 8 * 1024 * 1024) throw new Error("Each closing document must be smaller than 8 MB.");
+      return { fileName: file.name, mimeType: file.type || "application/octet-stream", size: file.size, dataUrl: await readFileAsDataUrl(file), uploadedAt: new Date().toLocaleString("en-IN") };
+    };
+    try {
+      const combinedVehicles = vehicle.combinationId
+        ? data.vehicles.filter((item) => item.combinationId === vehicle.combinationId)
+        : [vehicle];
+      const record = {
+        id: existing?.id ?? `sc-${Date.now()}`,
+        listingId,
+        vehicleId: vehicle.id,
+        clientId: vehicle.clientId,
+        estimatedAmount: combinedVehicles.reduce((sum, item) => sum + liability(item), 0),
+        bankConfirmedAmount,
+        foreclosureStatement: await readClosingFile("foreclosureStatement", existing?.foreclosureStatement),
+        bankNoc: await readClosingFile("bankNoc", existing?.bankNoc),
+        ownershipTransfer: await readClosingFile("ownershipTransfer", existing?.ownershipTransfer),
+        soldDate,
+        status: soldDate ? "Sold" : bankConfirmedAmount > 0 ? "Bank Confirmed" : "Estimated",
+        updatedAt: new Date().toISOString()
+      };
+      if (record.status === "Sold" && (!record.bankConfirmedAmount || !record.foreclosureStatement || !record.bankNoc || !record.ownershipTransfer)) {
+        setToast("Bank amount, foreclosure statement, NOC and ownership transfer proof are required before marking Sold.");
+        return;
+      }
+      const updated = {
+        ...data,
+        listings: data.listings.map((item) => item.id === listingId ? { ...item, status: record.status === "Sold" ? "Sold" : item.status } : item),
+        vehicles: record.status === "Sold"
+          ? data.vehicles.map((item) => item.id === vehicle.id ? { ...item, status: "Sold" } : item)
+          : data.vehicles,
+        saleClosings: [record, ...(data.saleClosings ?? []).filter((item) => item.id !== record.id)]
+      };
+      persist(withAudit(updated, {
+        module: "Sale Closing",
+        action: record.status === "Sold" ? "Sale Completed" : "Bank Confirmation Updated",
+        record: listing.title,
+        oldValue: existing?.status ?? "Estimated",
+        newValue: record.status,
+        remark: `Estimated ${formatMoney(record.estimatedAmount)} | Bank confirmed ${formatMoney(record.bankConfirmedAmount)}`
+      }), record.status === "Sold" ? "Sale completed and records saved" : "Bank closing details saved");
+      form.reset();
+    } catch (error) {
+      setToast(error.message || "Sale closing details could not be saved.");
+    }
   };
 
   const updateVehicleFinance = (event, vehicleId) => {
@@ -1422,7 +1514,7 @@ function AdminApp({ session, onLogout }) {
     setToast(`Deleting ${client.name}...`);
     try {
       if (userId) {
-        const response = await fetch(`${API_BASE}/api/users/${userId}`, { method: "DELETE" });
+        const response = await fetch(`${API_BASE}/api/users/${userId}`, { method: "DELETE", headers: authHeaders(session.token) });
         const result = await response.json();
         if (!response.ok) throw new Error(result.error || "Delete failed");
       }
@@ -1459,7 +1551,7 @@ function AdminApp({ session, onLogout }) {
     try {
       const response = await fetch(`${API_BASE}/api/common-password`, {
         method: "PUT",
-        headers: { "Content-Type": "application/json" },
+        headers: authHeaders(session.token, { "Content-Type": "application/json" }),
         body: JSON.stringify({ password })
       });
       const result = await response.json();
@@ -1484,7 +1576,7 @@ function AdminApp({ session, onLogout }) {
     try {
       const response = await fetch(`${API_BASE}/api/reminder-settings`, {
         method: "PUT",
-        headers: { "Content-Type": "application/json" },
+        headers: authHeaders(session.token, { "Content-Type": "application/json" }),
         body: JSON.stringify(reminderSettings)
       });
       const result = await response.json();
@@ -1512,7 +1604,7 @@ function AdminApp({ session, onLogout }) {
     try {
       const response = await fetch(`${API_BASE}/api/permissions`, {
         method: "PUT",
-        headers: { "Content-Type": "application/json" },
+        headers: authHeaders(session.token, { "Content-Type": "application/json" }),
         body: JSON.stringify({ rolePermissions })
       });
       const result = await response.json();
@@ -1540,12 +1632,12 @@ function AdminApp({ session, onLogout }) {
     try {
       const response = await fetch(`${API_BASE}/api/users`, {
         method: "POST",
-        headers: { "Content-Type": "application/json" },
+        headers: authHeaders(session.token, { "Content-Type": "application/json" }),
         body: JSON.stringify({ name, email, password, role: "Caller" })
       });
       const result = await response.json();
       if (!response.ok) throw new Error(result.error || "Failed to create caller");
-      const backendData = await fetchBackendData();
+      const backendData = await fetchBackendData(session.token);
       setData(backendData);
       setSaveStatus("Saved");
       setToast(`Caller created: ${result.email}`);
@@ -1560,7 +1652,7 @@ function AdminApp({ session, onLogout }) {
     if (!window.confirm(`Delete caller ${caller.name}? Their assigned dues will become unassigned.`)) return;
     setSaveStatus("Deleting");
     try {
-      const response = await fetch(`${API_BASE}/api/users/${encodeURIComponent(caller.id)}`, { method: "DELETE" });
+      const response = await fetch(`${API_BASE}/api/users/${encodeURIComponent(caller.id)}`, { method: "DELETE", headers: authHeaders(session.token) });
       const result = await response.json().catch(() => ({}));
       if (!response.ok) throw new Error(result.error || "Caller could not be deleted.");
       const updated = {
@@ -1585,12 +1677,12 @@ function AdminApp({ session, onLogout }) {
     try {
       const response = await fetch(`${API_BASE}/api/caller-assignment/run`, {
         method: "POST",
-        headers: { "Content-Type": "application/json" },
+        headers: authHeaders(session.token, { "Content-Type": "application/json" }),
         body: JSON.stringify({ mode })
       });
       const result = await response.json();
       if (!response.ok) throw new Error(result.error || "Caller assignment failed");
-      const backendData = await fetchBackendData();
+      const backendData = await fetchBackendData(session.token);
       setData(backendData);
       setSaveStatus("Database");
       setToast(`Assigned ${result.assigned} due task(s), skipped ${result.skipped}`);
@@ -1673,7 +1765,7 @@ function AdminApp({ session, onLogout }) {
         {section === "dues" && <Dues data={data} updateTaskStatus={updateTaskStatus} assignCallerToTask={assignCallerToTask} />}
         {section === "verification" && <Verification data={data} updateTaskStatus={updateTaskStatus} />}
         {section === "caller" && <CallerQueue data={data} saveCallerOutcome={saveCallerOutcome} openWhatsApp={openWhatsApp} updateWhatsAppStatus={updateWhatsAppStatus} />}
-        {section === "marketplace" && <Marketplace data={data} updateListingStatus={updateListingStatus} />}
+        {section === "marketplace" && <Marketplace data={data} updateListingStatus={updateListingStatus} saveSaleClosing={saveSaleClosing} openFleet={() => openSection("fleet")} />}
         {section === "reports" && <Reports data={data} activeReport={activeReport} setActiveReport={setActiveReport} />}
         {section === "import" && <ImportRows data={data} importValidRows={importValidRows} lastSavedAt={lastSavedAt} />}
         {section === "settings" && <Settings data={data} lastSavedAt={lastSavedAt} saveStatus={saveStatus} clearNotifications={clearNotifications} resetDemoData={resetDemoData} exportData={exportData} saveCommonPassword={saveCommonPassword} saveReminderSettings={saveReminderSettings} saveRolePermissions={saveRolePermissions} createCallerAccount={createCallerAccount} deleteCallerAccount={deleteCallerAccount} runCallerAssignment={runCallerAssignment} saveWhatsAppTemplates={saveWhatsAppTemplates} setSection={openSection} />}
@@ -2732,11 +2824,58 @@ function CallerQueue({ data, saveCallerOutcome, openWhatsApp, updateWhatsAppStat
   );
 }
 
-function Marketplace({ data, updateListingStatus }) {
+function Marketplace({ data, updateListingStatus, saveSaleClosing, openFleet }) {
+  const [filters, setFilters] = useState({ assetType: "All", condition: "All", finance: "All", insurance: "All", location: "", maxPrice: "" });
+  const [showFilters, setShowFilters] = useState(false);
+  const filteredListings = data.listings.filter((listing) => {
+    const vehicle = getDataVehicle(data, listing.vehicleId);
+    const vehicleLiability = vehicle ? liability(vehicle) : 0;
+    const locationMatch = !filters.location.trim() || listing.location.toLowerCase().includes(filters.location.trim().toLowerCase());
+    const priceMatch = !filters.maxPrice || listing.price <= Number(filters.maxPrice);
+    const assetMatch = filters.assetType === "All" || vehicle?.type === filters.assetType;
+    const conditionMatch = filters.condition === "All" || listing.condition === filters.condition;
+    const financeMatch = filters.finance === "All" || (filters.finance === "Financed" ? vehicleLiability > 0 : vehicleLiability <= 0);
+    const insuranceMatch = filters.insurance === "All" || (filters.insurance === "Insured" ? Boolean(vehicle?.insuranceExpiry) : !vehicle?.insuranceExpiry);
+    return locationMatch && priceMatch && assetMatch && conditionMatch && financeMatch && insuranceMatch;
+  });
+
+  const resetFilters = () => setFilters({ assetType: "All", condition: "All", finance: "All", insurance: "All", location: "", maxPrice: "" });
+  const activeFilterCount = Object.entries(filters).filter(([key, value]) => key === "location" || key === "maxPrice" ? Boolean(value) : value !== "All").length;
+
   return (
-    <section className="grid-list">
-      {data.listings.map((listing) => {
+    <section className="stack">
+      <div className="section-intro">
+        <div>
+          <p className="eyebrow">Listings workspace</p>
+          <h2>Vehicle marketplace</h2>
+          <p>Approve listings and maintain the bank-confirmed closing record for every vehicle sale.</p>
+        </div>
+        <div className="section-intro-actions">
+          <button className="filter-trigger" type="button" onClick={() => setShowFilters(true)}><Icon name="filter" />Filters{activeFilterCount ? ` (${activeFilterCount})` : ""}</button>
+          <button type="button" onClick={openFleet}><Icon name="truck" />Open Fleet</button>
+        </div>
+      </div>
+      <>
+      {showFilters && <button className="filter-drawer-backdrop" type="button" aria-label="Close filters" onClick={() => setShowFilters(false)} />}
+      <aside className={`filter-drawer ${showFilters ? "open" : ""}`} aria-label="Marketplace filters">
+        <div className="filter-drawer-head"><div><p className="eyebrow">Refine results</p><h3>Marketplace filters</h3></div><button className="icon-button" type="button" aria-label="Close filters" onClick={() => setShowFilters(false)}><Icon name="close" /></button></div>
+        <label>Asset type<select value={filters.assetType} onChange={(event) => setFilters((current) => ({ ...current, assetType: event.target.value }))}><option>All</option><option>Truck</option><option>Trailer</option></select></label>
+        <label>Condition<select value={filters.condition} onChange={(event) => setFilters((current) => ({ ...current, condition: event.target.value }))}><option>All</option><option>Excellent</option><option>Good</option><option>Average</option></select></label>
+        <label>Finance<select value={filters.finance} onChange={(event) => setFilters((current) => ({ ...current, finance: event.target.value }))}><option>All</option><option>Financed</option><option>Loan-free</option></select></label>
+        <label>Insurance<select value={filters.insurance} onChange={(event) => setFilters((current) => ({ ...current, insurance: event.target.value }))}><option>All</option><option>Insured</option><option>Missing</option></select></label>
+        <label>Location<input value={filters.location} onChange={(event) => setFilters((current) => ({ ...current, location: event.target.value }))} placeholder="Search location" /></label>
+        <label>Max price<input type="number" min="0" value={filters.maxPrice} onChange={(event) => setFilters((current) => ({ ...current, maxPrice: event.target.value }))} placeholder="Any price" /></label>
+        <div className="filter-drawer-actions"><button className="filter-reset" type="button" onClick={resetFilters}><Icon name="refresh" />Reset</button><button type="button" onClick={() => setShowFilters(false)}>Apply filters</button></div>
+      </aside>
+      {data.listings.length === 0 ? <section className="empty-state-panel">
+        <Icon name="store" />
+        <h3>No marketplace listings yet</h3>
+        <p>Create a sale listing from Fleet first. It will appear here for approval and bank closing updates.</p>
+        <button type="button" onClick={openFleet}><Icon name="plus" />Create listing from Fleet</button>
+      </section> : filteredListings.length > 0 ? <section className="grid-list">
+      {filteredListings.map((listing) => {
         const listingPhoto = listing.photos?.[0];
+        const closing = (data.saleClosings ?? []).find((item) => item.listingId === listing.id);
         return (
           <article className="asset" key={listing.id}>
             {listingPhoto?.dataUrl && <img className="listing-photo" src={listingPhoto.dataUrl} alt={listing.title} />}
@@ -2750,21 +2889,69 @@ function Marketplace({ data, updateListingStatus }) {
             <Pair label="Price" value={formatMoney(listing.price)} />
             <Pair label="Vehicle" value={getDataVehicle(data, listing.vehicleId)?.regNo ?? listing.vehicleId} />
             <Pair label="Photos" value={String(listing.photos?.length ?? 0)} />
+            <Pair label="Estimated closing" value={closing ? formatMoney(closing.estimatedAmount) : formatMoney(getDataVehicle(data, listing.vehicleId) ? liability(getDataVehicle(data, listing.vehicleId)) : 0)} />
+            <Pair label="Bank-confirmed closing" value={closing?.bankConfirmedAmount ? formatMoney(closing.bankConfirmedAmount) : "Pending bank confirmation"} />
             <Pair label="Chat threads" value={String((data.marketplaceThreads ?? []).filter((thread) => thread.listingId === listing.id).length)} />
             <div className="actions">
               <button onClick={() => updateListingStatus(listing.id, "Active")}>Approve</button>
               <button onClick={() => updateListingStatus(listing.id, "Changes Required")}>Changes</button>
               <button className="danger" onClick={() => updateListingStatus(listing.id, "Rejected")}>Reject</button>
             </div>
+            <details className="sale-closing-panel">
+              <summary>Bank closing &amp; sale records</summary>
+              <form className="form-grid compact-form" onSubmit={(event) => saveSaleClosing(event, listing.id)}>
+                <label>Bank-confirmed amount<input name="bankConfirmedAmount" type="number" min="0" step="0.01" defaultValue={closing?.bankConfirmedAmount || ""} placeholder="384884" /></label>
+                <label>Sold date<input name="soldDate" type="date" defaultValue={closing?.soldDate || ""} /></label>
+                <label>Foreclosure statement<input name="foreclosureStatement" type="file" accept="application/pdf,image/*" /></label>
+                <label>Bank NOC<input name="bankNoc" type="file" accept="application/pdf,image/*" /></label>
+                <label className="span-2">Ownership transfer proof<input name="ownershipTransfer" type="file" accept="application/pdf,image/*" /></label>
+                <button className="span-2" type="submit"><Icon name="check" />Save closing records</button>
+              </form>
+              {closing && <div className="closing-file-list">
+                {[["Foreclosure", closing.foreclosureStatement], ["Bank NOC", closing.bankNoc], ["Transfer proof", closing.ownershipTransfer]].map(([label, file]) => file?.dataUrl && <a key={label} href={file.dataUrl} target="_blank" rel="noreferrer"><Icon name="upload" />Open {label}</a>)}
+              </div>}
+            </details>
           </article>
         );
       })}
+      </section> : <section className="empty-state-panel compact-empty"><Icon name="search" /><h3>No listings match these filters</h3><p>Reset the filters or create another listing from Fleet.</p><button type="button" onClick={resetFilters}><Icon name="refresh" />Reset filters</button></section>}
+      </>
     </section>
   );
 }
 
 function Reports({ data, activeReport, setActiveReport }) {
+  const [fromDate, setFromDate] = useState("");
+  const [toDate, setToDate] = useState("");
   const rows = getReportRows(activeReport, data);
+  const filteredRows = rows.filter((row) => {
+    if (!row.date) return !fromDate && !toDate;
+    const date = String(row.date).slice(0, 10);
+    return (!fromDate || date >= fromDate) && (!toDate || date <= toDate);
+  });
+  const exportRows = filteredRows.map(({ date, ...row }) => row);
+  const exportName = activeReport.toLowerCase().replace(/[^a-z0-9]+/g, "-");
+
+  const downloadExcel = () => {
+    const sheet = XLSX.utils.json_to_sheet(exportRows.length ? exportRows : [{ Message: "No records found for the selected date range." }]);
+    const workbook = XLSX.utils.book_new();
+    XLSX.utils.book_append_sheet(workbook, sheet, activeReport.slice(0, 31));
+    XLSX.writeFile(workbook, `kuber-finance-${exportName}-report.xlsx`);
+  };
+
+  const printPdf = () => {
+    const popup = window.open("", "_blank", "width=1100,height=760");
+    if (!popup) return;
+    const headers = Object.keys(exportRows[0] ?? { Name: "", Status: "", Amount: "", Detail: "" });
+    const body = (exportRows.length ? exportRows : [{ Name: "No records", Status: "", Amount: "", Detail: "No records found for the selected date range." }])
+      .map((row) => `<tr>${headers.map((header) => `<td>${escapeHtml(row[header])}</td>`).join("")}</tr>`).join("");
+    popup.document.write(`<!doctype html><html><head><title>Kuber Finance - ${escapeHtml(activeReport)} Report</title><style>body{font-family:Arial,sans-serif;padding:28px;color:#152238}h1{margin:0 0 6px}p{color:#5d6b7d;margin:0 0 18px}table{border-collapse:collapse;width:100%;font-size:12px}th,td{border:1px solid #cdd6e0;padding:8px;text-align:left;vertical-align:top}th{background:#e8eef5}</style></head><body><h1>Kuber Finance - ${escapeHtml(activeReport)} Report</h1><p>${fromDate || "All dates"} to ${toDate || "All dates"} | ${filteredRows.length} records</p><table><thead><tr>${headers.map((header) => `<th>${escapeHtml(header)}</th>`).join("")}</tr></thead><tbody>${body}</tbody></table></body></html>`);
+    popup.document.close();
+    popup.focus();
+    popup.onafterprint = () => popup.close();
+    popup.print();
+  };
+
   return (
     <section className="two-column">
       <section className="grid-list reports">
@@ -2777,13 +2964,20 @@ function Reports({ data, activeReport, setActiveReport }) {
         ))}
       </section>
       <Panel title={`${activeReport} Report`}>
+        <div className="report-toolbar">
+          <label>From date<input type="date" value={fromDate} onChange={(event) => setFromDate(event.target.value)} /></label>
+          <label>To date<input type="date" value={toDate} onChange={(event) => setToDate(event.target.value)} /></label>
+          <button type="button" onClick={downloadExcel}><Icon name="upload" />Excel</button>
+          <button type="button" onClick={printPdf}><Icon name="upload" />PDF</button>
+        </div>
+        <p className="report-result-count">{filteredRows.length} record{filteredRows.length === 1 ? "" : "s"} in selected range</p>
         {activeReport === "Audit" ? (
           <div className="timeline">
-            {data.auditLogs.map((log) => (
+            {filteredRows.map((log) => (
               <article key={log.id}>
-                <strong>{log.module}: {log.action}</strong>
-                <span>{log.record} | {log.oldValue} to {log.newValue}</span>
-                <small>{log.at} - {log.remark}</small>
+                <strong>{log.name}</strong>
+                <span>{log.status} | {log.amount}</span>
+                <small>{log.detail}</small>
               </article>
             ))}
           </div>
@@ -2792,7 +2986,7 @@ function Reports({ data, activeReport, setActiveReport }) {
             <table>
               <thead><tr><th>Name</th><th>Status</th><th>Amount</th><th>Detail</th></tr></thead>
               <tbody>
-                {rows.map((row) => <tr key={row.id}><td>{row.name}</td><td><Badge label={row.status} /></td><td>{row.amount}</td><td>{row.detail}</td></tr>)}
+                {filteredRows.map((row) => <tr key={row.id}><td>{row.name}</td><td><Badge label={row.status} /></td><td>{row.amount}</td><td>{row.detail}</td></tr>)}
               </tbody>
             </table>
           </div>
@@ -3023,7 +3217,7 @@ function CustomerPortal({ session, onLogout }) {
 
   useEffect(() => {
     let active = true;
-    fetchBackendData()
+    fetchBackendData(session.token)
       .then((backendData) => {
         if (!active) return;
         setData(backendData);
@@ -3082,7 +3276,7 @@ function CustomerPortal({ session, onLogout }) {
   const persistCustomerData = async (nextData, message) => {
     setData(nextData);
     try {
-      await syncDataToBackend(nextData);
+      await syncDataToBackend(nextData, session.token);
     } catch (error) {
       setLoadError(error.message || "Customer data could not be saved.");
       return;
@@ -3190,7 +3384,48 @@ function CustomerPortal({ session, onLogout }) {
     await persistCustomerData(updated, `Chat ${status}`);
   };
 
-  const submitCustomerProof = async (task, file) => {
+  const submitCustomerListing = async (event) => {
+    event.preventDefault();
+    if (!canUsePermission(data, session.role, "Create sale listing")) {
+      setLoadError("Permission denied for sale listings.");
+      return;
+    }
+    const form = event.currentTarget;
+    const formData = new FormData(form);
+    const vehicleId = String(formData.get("vehicleId") || "");
+    const vehicle = myVehicles.find((item) => item.id === vehicleId);
+    const price = Number(formData.get("price") || 0);
+    const location = String(formData.get("location") || "").trim();
+    const condition = String(formData.get("condition") || "Good");
+    if (!vehicle || !price || !location) {
+      setLoadError("Choose a vehicle and enter a valid price and location.");
+      return;
+    }
+    const photos = await readListingPhotos(formData.getAll("photos"));
+    const existing = data.listings.find((item) => item.vehicleId === vehicleId && !["Rejected", "Disabled"].includes(item.status));
+    const listing = {
+      id: existing?.id ?? `m-${Date.now()}`,
+      vehicleId,
+      title: `${vehicle.year || ""} ${vehicle.make || vehicle.type} ${vehicle.model || "Vehicle"}`.trim(),
+      price,
+      location,
+      status: existing?.status ?? "Submitted",
+      condition,
+      photos
+    };
+    const updated = {
+      ...data,
+      listings: [listing, ...data.listings.filter((item) => item.id !== listing.id)],
+      notifications: [
+        { id: `n-${Date.now()}`, title: "Sale listing submitted", detail: `${listing.title} is waiting for Admin approval.`, target: "marketplace", unread: true },
+        ...(data.notifications ?? [])
+      ]
+    };
+    await persistCustomerData(updated, "Vehicle listing submitted for Admin approval.");
+    form.reset();
+  };
+
+  const submitCustomerProof = async (task, file, details = {}) => {
     if (!canUsePermission(data, session.role, "View own fleet")) {
       setLoadError("Permission denied for proof upload.");
       return;
@@ -3215,8 +3450,11 @@ function CustomerPortal({ session, onLogout }) {
       dataUrl,
       uploadedBy: myClient?.name ?? session.name,
       uploadedAt,
-      note: "Submitted from customer web portal"
+      note: details.customerNote || "Submitted from customer web portal"
     };
+    const detailRows = Object.entries(details)
+      .filter(([key, value]) => key !== "customerNote" && value)
+      .map(([key, value]) => [key.replace(/([A-Z])/g, " $1").replace(/^./, (letter) => letter.toUpperCase()), String(value)]);
     const verificationItem = {
       id: `vf-${Date.now()}`,
       taskId: task.id,
@@ -3227,6 +3465,7 @@ function CustomerPortal({ session, onLogout }) {
         ["Vehicle", vehicle?.regNo ?? "-"],
         ["Due Type", task.type],
         ["Due Amount", formatMoney(task.amount)],
+        ...detailRows,
         ["Uploaded File", file.name]
       ],
       audit: [
@@ -3333,7 +3572,7 @@ function CustomerPortal({ session, onLogout }) {
           <CustomerDocuments documents={myDocuments} vehicles={myVehicles} />
         )}
         {sectionAllowed && section === "marketplace" && (
-          <CustomerMarketplace listings={marketplaceListings} vehicles={data.vehicles} myVehicleIds={new Set(myVehicles.map((vehicle) => vehicle.id))} />
+          <CustomerMarketplace listings={marketplaceListings} vehicles={data.vehicles} saleClosings={data.saleClosings} myVehicles={myVehicles} myVehicleIds={new Set(myVehicles.map((vehicle) => vehicle.id))} submitListing={submitCustomerListing} />
         )}
         {sectionAllowed && section === "chats" && (
           <CustomerChats
@@ -3593,20 +3832,8 @@ function CustomerDues({ dues, vehicles, submitCustomerProof }) {
                 </div>
                 <div className="due-status"><Badge label={task.status} /></div>
                 <b className="due-amount">{formatMoney(task.amount)}</b>
-                {task.status !== "Proof Pending" && (
-                  <label className="upload-button">
-                    <Icon name="upload" />
-                    Upload proof
-                    <input
-                      type="file"
-                      accept="application/pdf,image/*"
-                      onChange={(event) => {
-                        submitCustomerProof(task, event.target.files?.[0]);
-                        event.target.value = "";
-                      }}
-                    />
-                  </label>
-                )}
+                {task.status !== "Proof Pending" && <CustomerProofForm task={task} submitCustomerProof={submitCustomerProof} />}
+                {task.status === "Proof Pending" && <span className="proof-pending-note">Proof submitted for Admin review</span>}
               </article>
             );
           })}
@@ -3614,6 +3841,47 @@ function CustomerDues({ dues, vehicles, submitCustomerProof }) {
         </div>
       </section>
     </section>
+  );
+}
+
+function CustomerProofForm({ task, submitCustomerProof }) {
+  const isEmi = task.type === "EMI";
+  const isInsurance = task.type === "Insurance";
+  return (
+    <details className="customer-proof-details">
+      <summary><Icon name="upload" /> Submit details &amp; proof</summary>
+      <form className="form-grid compact-form" onSubmit={(event) => {
+        event.preventDefault();
+        const formData = new FormData(event.currentTarget);
+        const details = Object.fromEntries(formData.entries());
+        const file = formData.get("proofFile");
+        submitCustomerProof(task, file, details);
+        event.currentTarget.reset();
+      }}>
+        {isEmi && <>
+          <label>Payment date<input name="paymentDate" type="date" required /></label>
+          <label>Payment amount<input name="paymentAmount" type="number" min="1" step="0.01" placeholder="28000" required /></label>
+          <label>Payment method<select name="paymentMethod" defaultValue="UPI"><option>UPI</option><option>NEFT / RTGS</option><option>Cash</option><option>Cheque</option><option>Other</option></select></label>
+          <label>Transaction reference<input name="transactionReference" placeholder="UTR / receipt number" required /></label>
+        </>}
+        {isInsurance && <>
+          <label>Insurance company<input name="insuranceCompany" placeholder="Company name" required /></label>
+          <label>Policy number<input name="policyNumber" placeholder="Policy number" required /></label>
+          <label>Policy start date<input name="policyStartDate" type="date" required /></label>
+          <label>Policy expiry date<input name="policyExpiryDate" type="date" required /></label>
+          <label>Premium amount<input name="premiumAmount" type="number" min="1" step="0.01" placeholder="42000" required /></label>
+          <label>Policy type<select name="policyType" defaultValue="Comprehensive"><option>Comprehensive</option><option>Third Party</option><option>Other</option></select></label>
+        </>}
+        {!isEmi && !isInsurance && <>
+          <label>Document number<input name="documentNumber" placeholder="Permit / PUC / fitness number" required /></label>
+          <label>Issue date<input name="issueDate" type="date" required /></label>
+          <label>Expiry date<input name="expiryDate" type="date" required /></label>
+        </>}
+        <label className="span-2">Additional note<textarea name="customerNote" placeholder="Add a note for Admin (optional)" /></label>
+        <label className="span-2">Proof document<input name="proofFile" type="file" accept="application/pdf,image/*" required /></label>
+        <button className="span-2" type="submit"><Icon name="upload" />Submit for verification</button>
+      </form>
+    </details>
   );
 }
 
@@ -3654,16 +3922,29 @@ function CustomerDocuments({ documents, vehicles }) {
   );
 }
 
-function CustomerMarketplace({ listings, vehicles, myVehicleIds }) {
+function CustomerMarketplace({ listings, vehicles, saleClosings = [], myVehicles, myVehicleIds, submitListing }) {
   return (
     <section className="stack">
       <div className="customer-section-header">
         <h2>Marketplace</h2>
         <span>{listings.length} listing{listings.length !== 1 ? "s" : ""}</span>
       </div>
+      <details className="customer-action-panel">
+        <summary><Icon name="plus" /> Sell a vehicle</summary>
+        <form className="form-grid compact-form" onSubmit={submitListing}>
+          <label>Vehicle<select name="vehicleId" required defaultValue=""><option value="" disabled>Select your vehicle</option>{myVehicles.map((vehicle) => <option key={vehicle.id} value={vehicle.id}>{vehicle.regNo} | {vehicle.make} {vehicle.model}</option>)}</select></label>
+          <label>Asking price<input name="price" type="number" min="1" step="0.01" placeholder="950000" required /></label>
+          <label>Location<input name="location" placeholder="Ahmedabad" required /></label>
+          <label>Condition<select name="condition" defaultValue="Good"><option>Excellent</option><option>Good</option><option>Average</option></select></label>
+          <label className="span-2">Vehicle photos<input name="photos" type="file" accept="image/*" multiple /></label>
+          <button className="span-2" type="submit"><Icon name="store" />Submit sale listing</button>
+        </form>
+        {myVehicles.length === 0 && <Empty text="No vehicle is available for a sale listing." />}
+      </details>
       <div className="grid-list">
         {listings.map((l) => {
           const v = vehicles.find((x) => x.id === l.vehicleId);
+          const closing = saleClosings.find((item) => item.listingId === l.id);
           const listingPhoto = l.photos?.[0];
           const mine = myVehicleIds?.has(l.vehicleId);
           return (
@@ -3680,6 +3961,8 @@ function CustomerMarketplace({ listings, vehicles, myVehicleIds }) {
                 <div><dt>Price</dt><dd>{formatMoney(l.price)}</dd></div>
                 <div><dt>Vehicle</dt><dd>{v?.regNo ?? l.vehicleId}</dd></div>
                 <div><dt>Photos</dt><dd>{l.photos?.length ?? 0}</dd></div>
+                <div><dt>Estimated closing</dt><dd>{closing ? formatMoney(closing.estimatedAmount) : formatMoney(v ? liability(v) : 0)}</dd></div>
+                <div><dt>Bank-confirmed closing</dt><dd>{closing?.bankConfirmedAmount ? formatMoney(closing.bankConfirmedAmount) : "Pending bank confirmation"}</dd></div>
               </dl>
             </article>
           );
@@ -5672,6 +5955,16 @@ function cleanPdfValue(value) {
     .replace(/\b(?:INR|Rs|Amount|Date)\b.*$/i, "")
     .trim();
 }
+
+function escapeHtml(value) {
+  return String(value ?? "")
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;")
+    .replace(/\"/g, "&quot;")
+    .replace(/'/g, "&#39;");
+}
+
 function getReportRows(report, data) {
   if (report === "Finance") {
     return data.dueTasks.map((task) => ({
@@ -5679,7 +5972,8 @@ function getReportRows(report, data) {
       name: `${task.type} - ${getDataClient(data, task.clientId)?.name ?? task.clientId}`,
       status: task.status,
       amount: formatMoney(task.amount),
-      detail: `Due ${formatDisplayDate(task.dueDate)}`
+      detail: `Due ${formatDisplayDate(task.dueDate)}`,
+      date: task.dueDate
     }));
   }
   if (report === "Insurance") {
@@ -5688,7 +5982,8 @@ function getReportRows(report, data) {
       name: vehicle.regNo,
       status: vehicle.insuranceExpiry <= "2026-08-31" ? "Due" : "Active",
       amount: formatMoney(vehicle.overdue),
-      detail: `Insurance expiry ${formatDisplayDate(vehicle.insuranceExpiry)}`
+      detail: `Insurance expiry ${formatDisplayDate(vehicle.insuranceExpiry)}`,
+      date: vehicle.insuranceExpiry
     }));
   }
   if (report === "Compliance") {
@@ -5697,7 +5992,8 @@ function getReportRows(report, data) {
       name: vehicle.regNo,
       status: vehicle.permitExpiry <= "2026-08-31" ? "Due" : "Active",
       amount: "-",
-      detail: `Permit expiry ${formatDisplayDate(vehicle.permitExpiry)}`
+      detail: `Permit expiry ${formatDisplayDate(vehicle.permitExpiry)}`,
+      date: vehicle.permitExpiry
     }));
   }
   if (report === "Caller") {
@@ -5706,7 +6002,8 @@ function getReportRows(report, data) {
       name: getDataClient(data, data.dueTasks.find((task) => task.id === activity.taskId)?.clientId)?.name ?? activity.taskId,
       status: activity.outcome,
       amount: activity.expectedAmount || "-",
-      detail: `${activity.channel} | ${activity.nextFollowUp}`
+      detail: `${activity.channel} | ${activity.nextFollowUp}`,
+      date: activity.at || activity.nextFollowUp
     }));
   }
   if (report === "Marketplace") {
@@ -5715,8 +6012,16 @@ function getReportRows(report, data) {
       name: listing.title,
       status: listing.status,
       amount: formatMoney(listing.price),
-      detail: `${listing.location} | ${listing.condition}`
+      detail: `${listing.location} | ${listing.condition}`,
+      date: listing.createdAt || ""
     }));
   }
-  return [];
+  return data.auditLogs.map((log) => ({
+    id: log.id,
+    name: `${log.module}: ${log.action}`,
+    status: `${log.record} | ${log.oldValue} to ${log.newValue}`,
+    amount: "-",
+    detail: `${log.at} - ${log.remark}`,
+    date: log.at
+  }));
 }
