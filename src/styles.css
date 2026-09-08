@@ -3078,6 +3078,34 @@ details .form-grid {
   resize: vertical;
 }
 
+.chat-attachment-picker {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  width: fit-content;
+  max-width: 100%;
+  padding: 8px 10px;
+  border: 1px solid #31577F;
+  border-radius: 8px;
+  color: #91A8C4;
+  cursor: pointer;
+  font-size: 12px;
+  font-weight: 800;
+}
+
+.chat-attachment-picker input {
+  display: none;
+}
+
+.chat-attachment {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  color: #F5A623;
+  font-weight: 800;
+  overflow-wrap: anywhere;
+}
+
 .chat-history {
   display: grid;
   gap: 8px;

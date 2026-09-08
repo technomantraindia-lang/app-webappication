@@ -3340,7 +3340,7 @@ function CustomerPortal({ session, onLogout }) {
     setLoadError(message || "");
   };
 
-  const saveCustomerMarketplaceMessage = async (listingId, messageText) => {
+  const saveCustomerMarketplaceMessage = async (listingId, messageText, attachment = null) => {
     if (!canUsePermission(data, session.role, "Owner chat")) {
       setLoadError("Permission denied for marketplace chat.");
       return;
@@ -3349,7 +3349,7 @@ function CustomerPortal({ session, onLogout }) {
     const vehicle = data.vehicles.find((item) => item.id === listing?.vehicleId);
     const sellerClientId = vehicle?.clientId ?? "";
     const text = messageText.trim();
-    if (!listing || !text || !customerClientId) return;
+    if (!listing || (!text && !attachment) || !customerClientId) return;
     const now = new Date().toLocaleString("en-IN");
     const existingThread = (data.marketplaceThreads ?? []).find((thread) => thread.listingId === listingId && thread.buyerClientId === customerClientId);
     const message = {
@@ -3358,7 +3358,8 @@ function CustomerPortal({ session, onLogout }) {
       senderName: myClient?.name ?? session.name,
       text,
       sentAt: now,
-      read: false
+      read: false,
+      attachment
     };
     const nextThread = existingThread ? {
       ...existingThread,
@@ -4036,6 +4037,7 @@ function CustomerMarketplace({ listings, vehicles, saleClosings = [], myVehicles
 
 function CustomerChats({ listings, vehicles, clients, threads, customerClientId, session, saveMessage, updateThreadStatus }) {
   const [drafts, setDrafts] = useState({});
+  const [attachments, setAttachments] = useState({});
   const visibleListings = listings.filter((listing) => ["Active", "Reserved"].includes(listing.status) || threads.some((thread) => thread.listingId === listing.id));
   const threadCount = threads.filter((thread) => thread.buyerClientId === customerClientId || thread.sellerClientId === customerClientId).length;
 
@@ -4052,6 +4054,7 @@ function CustomerChats({ listings, vehicles, clients, threads, customerClientId,
           const thread = threads.find((item) => item.listingId === listing.id && (item.buyerClientId === customerClientId || item.sellerClientId === customerClientId))
             ?? threads.find((item) => item.listingId === listing.id);
           const draft = drafts[listing.id] ?? "";
+          const attachment = attachments[listing.id] ?? null;
           return (
             <article className="asset chat-card" key={listing.id}>
               <div className="card-head">
@@ -4065,7 +4068,8 @@ function CustomerChats({ listings, vehicles, clients, threads, customerClientId,
                 {(thread?.messages ?? []).slice(-5).map((message) => (
                   <div className={`chat-bubble ${message.senderId === session.id ? "mine" : ""}`} key={message.id}>
                     <strong>{message.senderName}</strong>
-                    <span>{message.text}</span>
+                    {message.text && <span>{message.text}</span>}
+                    {message.attachment?.dataUrl && <a className="chat-attachment" href={message.attachment.dataUrl} target="_blank" rel="noreferrer"><Icon name="upload" />Open {message.attachment.fileName}</a>}
                     <small>{message.sentAt}</small>
                   </div>
                 ))}
@@ -4077,10 +4081,25 @@ function CustomerChats({ listings, vehicles, clients, threads, customerClientId,
                 placeholder="Type your message"
                 onChange={(event) => setDrafts((current) => ({ ...current, [listing.id]: event.target.value }))}
               />
+              <label className="chat-attachment-picker"><Icon name="upload" /><span>{attachment?.fileName || "Attach image or file"}</span><input type="file" accept="image/*,application/pdf" onChange={async (event) => {
+                const file = event.target.files?.[0];
+                if (!file) return;
+                if (file.size > 8 * 1024 * 1024) {
+                  setDrafts((current) => ({ ...current, [listing.id]: "Files must be smaller than 8 MB." }));
+                  return;
+                }
+                try {
+                  const dataUrl = await readFileAsDataUrl(file);
+                  setAttachments((current) => ({ ...current, [listing.id]: { fileName: file.name, mimeType: file.type || "application/octet-stream", size: file.size, dataUrl } }));
+                } catch (error) {
+                  setDrafts((current) => ({ ...current, [listing.id]: "Unable to read this file." }));
+                }
+              }} /></label>
               <div className="actions">
                 <button type="button" onClick={() => {
-                  saveMessage(listing.id, draft);
+                  saveMessage(listing.id, draft, attachment);
                   setDrafts((current) => ({ ...current, [listing.id]: "" }));
+                  setAttachments((current) => ({ ...current, [listing.id]: null }));
                 }}><Icon name="check" />Send</button>
                 <button type="button" onClick={() => updateThreadStatus(listing.id, "Reserved")}>Reserve</button>
                 <button type="button" onClick={() => updateThreadStatus(listing.id, "Reported")}>Report</button>
