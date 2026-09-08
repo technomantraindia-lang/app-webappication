@@ -2409,6 +2409,23 @@ td {
   padding: 12px 20px;
 }
 
+.marketplace-detail-photos {
+  display: flex;
+  gap: 10px;
+  overflow-x: auto;
+  padding: 16px 20px 0;
+}
+
+.marketplace-detail-photos img {
+  width: 150px;
+  height: 96px;
+  flex: 0 0 auto;
+  border: 1px solid #2A476F;
+  border-radius: 9px;
+  background: #102744;
+  object-fit: cover;
+}
+
 .detail-summary-strip div {
   background: #1D3A66;
   border: 1px solid #2A476F;

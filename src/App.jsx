@@ -2827,6 +2827,7 @@ function CallerQueue({ data, saveCallerOutcome, openWhatsApp, updateWhatsAppStat
 function Marketplace({ data, updateListingStatus, saveSaleClosing, openFleet }) {
   const [filters, setFilters] = useState({ assetType: "All", condition: "All", finance: "All", insurance: "All", location: "", maxPrice: "" });
   const [showFilters, setShowFilters] = useState(false);
+  const [selectedListing, setSelectedListing] = useState(null);
   const filteredListings = data.listings.filter((listing) => {
     const vehicle = getDataVehicle(data, listing.vehicleId);
     const vehicleLiability = vehicle ? liability(vehicle) : 0;
@@ -2893,6 +2894,7 @@ function Marketplace({ data, updateListingStatus, saveSaleClosing, openFleet }) 
             <Pair label="Bank-confirmed closing" value={closing?.bankConfirmedAmount ? formatMoney(closing.bankConfirmedAmount) : "Pending bank confirmation"} />
             <Pair label="Chat threads" value={String((data.marketplaceThreads ?? []).filter((thread) => thread.listingId === listing.id).length)} />
             <div className="actions">
+              <button type="button" onClick={() => setSelectedListing(listing)}><Icon name="eye" />View details</button>
               <button onClick={() => updateListingStatus(listing.id, "Active")}>Approve</button>
               <button onClick={() => updateListingStatus(listing.id, "Changes Required")}>Changes</button>
               <button className="danger" onClick={() => updateListingStatus(listing.id, "Rejected")}>Reject</button>
@@ -2916,7 +2918,61 @@ function Marketplace({ data, updateListingStatus, saveSaleClosing, openFleet }) 
       })}
       </section> : <section className="empty-state-panel compact-empty"><Icon name="search" /><h3>No listings match these filters</h3><p>Reset the filters or create another listing from Fleet.</p><button type="button" onClick={resetFilters}><Icon name="refresh" />Reset filters</button></section>}
       </>
+      {selectedListing && <MarketplaceVehicleModal listing={selectedListing} vehicle={getDataVehicle(data, selectedListing.vehicleId)} closing={(data.saleClosings ?? []).find((item) => item.listingId === selectedListing.id)} isAdmin onClose={() => setSelectedListing(null)} />}
     </section>
+  );
+}
+
+function MarketplaceVehicleModal({ listing, vehicle, closing, isAdmin = false, onClose }) {
+  const estimatedAmount = closing?.estimatedAmount ?? (vehicle ? liability(vehicle) : 0);
+  return (
+    <div className="detail-modal-backdrop" role="presentation" onMouseDown={onClose}>
+      <section className="detail-modal marketplace-detail-modal" role="dialog" aria-modal="true" aria-labelledby="marketplace-detail-title" onMouseDown={(event) => event.stopPropagation()}>
+        <div className="detail-modal-head">
+          <div><p className="eyebrow">Marketplace listing</p><h2 id="marketplace-detail-title">{listing.title}</h2><p>{listing.location} | {listing.condition} condition</p></div>
+          <div className="detail-modal-actions"><Badge label={listing.status} /><button className="icon-button close-button" type="button" aria-label="Close details" onClick={onClose}>x</button></div>
+        </div>
+        {listing.photos?.length > 0 && <div className="marketplace-detail-photos">{listing.photos.map((photo) => photo.dataUrl && <img key={photo.id} src={photo.dataUrl} alt={photo.fileName} />)}</div>}
+        <div className="detail-summary-strip">
+          <div><span>Asking price</span><strong>{formatMoney(listing.price)}</strong></div>
+          <div><span>Estimated closing</span><strong>{formatMoney(estimatedAmount)}</strong></div>
+          <div><span>Bank-confirmed closing</span><strong>{closing?.bankConfirmedAmount ? formatMoney(closing.bankConfirmedAmount) : "Pending"}</strong></div>
+        </div>
+        <div className="detail-card-grid">
+          <DetailSection title="Vehicle" rows={[
+            ["Registration", vehicle?.regNo],
+            ["Asset type", vehicle?.type],
+            ["Manufacturer", vehicle?.make],
+            ["Model", vehicle?.model],
+            ["Year", vehicle?.year],
+            ["Kilometres", vehicle?.km ? `${vehicle.km.toLocaleString("en-IN")} km` : "-"],
+            ["Asset status", vehicle?.status]
+          ]} />
+          <DetailSection title="Finance" rows={[
+            ["Finance status", vehicle && liability(vehicle) > 0 ? "Financed" : "Loan-free"],
+            ...(isAdmin ? [["Financier", vehicle?.financier], ["Loan account", vehicle?.loanAccount]] : []),
+            ["Monthly EMI", vehicle?.emiAmount ? formatMoney(vehicle.emiAmount) : "-"],
+            ["EMI progress", vehicle?.tenure ? `${vehicle.paidEmi || 0} / ${vehicle.tenure} paid` : "-"],
+            ["Public finance view", "Private bank documents hidden"]
+          ]} />
+          <DetailSection title="Insurance & compliance" rows={[
+            ["Insurance company", vehicle?.insuranceCompany],
+            ["Insurance expiry", formatDisplayDate(vehicle?.insuranceExpiry)],
+            ["Policy number", vehicle?.insurancePolicyNo ? "Available to verified users" : "Not available"],
+            ["Permit expiry", formatDisplayDate(vehicle?.permitExpiry)],
+            ["PUC expiry", formatDisplayDate(vehicle?.pucExpiry)],
+            ["Fitness expiry", formatDisplayDate(vehicle?.fitnessExpiry)]
+          ]} />
+          <DetailSection title="Sale tracking" rows={[
+            ["Listing location", listing.location],
+            ["Listing condition", listing.condition],
+            ["Closing status", closing?.status || "Estimated"],
+            ["Sold date", closing?.soldDate ? formatDisplayDate(closing.soldDate) : "Not sold"],
+            ["Photos", `${listing.photos?.length || 0} uploaded`]
+          ]} />
+        </div>
+      </section>
+    </div>
   );
 }
 
@@ -3923,6 +3979,7 @@ function CustomerDocuments({ documents, vehicles }) {
 }
 
 function CustomerMarketplace({ listings, vehicles, saleClosings = [], myVehicles, myVehicleIds, submitListing }) {
+  const [selectedListing, setSelectedListing] = useState(null);
   return (
     <section className="stack">
       <div className="customer-section-header">
@@ -3964,6 +4021,7 @@ function CustomerMarketplace({ listings, vehicles, saleClosings = [], myVehicles
                 <div><dt>Estimated closing</dt><dd>{closing ? formatMoney(closing.estimatedAmount) : formatMoney(v ? liability(v) : 0)}</dd></div>
                 <div><dt>Bank-confirmed closing</dt><dd>{closing?.bankConfirmedAmount ? formatMoney(closing.bankConfirmedAmount) : "Pending bank confirmation"}</dd></div>
               </dl>
+              <div className="actions"><button type="button" onClick={() => setSelectedListing(l)}><Icon name="eye" />View details</button></div>
             </article>
           );
         })}
@@ -3971,6 +4029,7 @@ function CustomerMarketplace({ listings, vehicles, saleClosings = [], myVehicles
           <Empty text="No active marketplace listings yet." />
         )}
       </div>
+      {selectedListing && <MarketplaceVehicleModal listing={selectedListing} vehicle={vehicles.find((vehicle) => vehicle.id === selectedListing.vehicleId)} closing={saleClosings.find((item) => item.listingId === selectedListing.id)} onClose={() => setSelectedListing(null)} />}
     </section>
   );
 }
