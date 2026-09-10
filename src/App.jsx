@@ -2952,7 +2952,14 @@ function Verification({ data, updateTaskStatus }) {
           </article>
         );
       })}
-      {data.verificationItems.length === 0 && <Empty text="No proof is waiting for verification." />}
+      {data.verificationItems.length === 0 && (
+        <div className="verification-empty-state">
+          <div className="verification-empty-icon"><Icon name="check" /></div>
+          <span className="verification-empty-kicker">All clear</span>
+          <h3>No proof is waiting for verification</h3>
+          <p>Submitted payment proofs will appear here when they are ready for your review.</p>
+        </div>
+      )}
     </section>
   );
 }

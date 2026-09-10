@@ -8637,6 +8637,89 @@ textarea {
   z-index: 1;
 }
 
+/* Smart Alert summary: keep all four metrics on one desktop row. */
+.dues-summary {
+  grid-template-columns: repeat(4, minmax(0, 1fr)) !important;
+  min-width: 0;
+}
+.dues-summary-card {
+  min-width: 0;
+}
+
+@media (max-width: 1100px) {
+  .dues-summary { grid-template-columns: repeat(2, minmax(0, 1fr)) !important; }
+}
+@media (max-width: 680px) {
+  .dues-summary { grid-template-columns: 1fr !important; }
+}
+
+.verification-empty-state {
+  align-items: center;
+  background:
+    radial-gradient(360px 180px at 50% 0%, rgba(39, 117, 174, .22), transparent 72%),
+    linear-gradient(145deg, #102d4d, #091d35);
+  border: 1px solid #285a86;
+  border-radius: 20px;
+  box-shadow: 0 18px 42px rgba(1, 12, 27, .24);
+  display: flex;
+  flex-direction: column;
+  grid-column: 1 / -1;
+  justify-content: center;
+  min-height: 310px;
+  padding: 42px 24px;
+  position: relative;
+  text-align: center;
+  overflow: hidden;
+}
+.verification-empty-state::after {
+  border: 1px solid rgba(255, 192, 46, .16);
+  border-radius: 50%;
+  content: "";
+  height: 220px;
+  position: absolute;
+  right: -96px;
+  top: -120px;
+  width: 220px;
+}
+.verification-empty-icon {
+  align-items: center;
+  background: linear-gradient(145deg, #1b588a, #0d3156);
+  border: 1px solid rgba(255, 192, 46, .55);
+  border-radius: 18px;
+  box-shadow: 0 12px 24px rgba(2, 16, 34, .32);
+  color: #ffc02e;
+  display: flex;
+  height: 64px;
+  justify-content: center;
+  margin-bottom: 20px;
+  width: 64px;
+}
+.verification-empty-icon .icon { height: 28px; width: 28px; }
+.verification-empty-kicker {
+  color: #ffc02e;
+  font-size: 11px;
+  font-weight: 900;
+  letter-spacing: .16em;
+  text-transform: uppercase;
+}
+.verification-empty-state h3 {
+  color: #f7fbff;
+  font-size: 23px;
+  margin: 9px 0 7px;
+}
+.verification-empty-state p {
+  color: #a9c0d8;
+  font-size: 14px;
+  line-height: 1.55;
+  margin: 0;
+  max-width: 470px;
+}
+
+@media (max-width: 680px) {
+  .verification-empty-state { min-height: 250px; padding: 32px 18px; }
+  .verification-empty-state h3 { font-size: 19px; }
+}
+
 /* Refined right-side login composition. */
 .login-panel {
   align-items: center;
