@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useState } from "react";
 import { MarketplaceChat, ChatRequestButton, useMarketplaceChat } from "./MarketplaceChat";
+import loginBackground from "./assets/background.png";
 import * as pdfjsLib from "pdfjs-dist";
 import { createWorker } from "tesseract.js";
 import * as XLSX from "xlsx";
@@ -105,7 +106,10 @@ function LoginPage({ onLogin }) {
 
   return (
     <div className="login-shell">
-      <aside className="login-hero">
+      <aside
+        className="login-hero"
+        style={{ backgroundImage: `url(${loginBackground})` }}
+      >
         <div className="login-hero-glow" aria-hidden="true" />
         <div className="login-hero-brand">
           <span className="login-logo">K</span>
@@ -116,6 +120,9 @@ function LoginPage({ onLogin }) {
         </div>
 
         <div className="login-hero-body">
+          <div className="login-hero-kicker">
+            <span>Finance</span><i /> <span>Manage</span><i /> <span>Grow</span>
+          </div>
           <h1 className="login-hero-title">
             Drive your fleet
             <br />
