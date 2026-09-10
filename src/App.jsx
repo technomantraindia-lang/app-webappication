@@ -1,4 +1,5 @@
 import { useEffect, useMemo, useState } from "react";
+import { MarketplaceChat, ChatRequestButton, useMarketplaceChat } from "./MarketplaceChat";
 import * as pdfjsLib from "pdfjs-dist";
 import { createWorker } from "tesseract.js";
 import * as XLSX from "xlsx";
@@ -34,7 +35,10 @@ const PENDING_SYNC_KEY = "kuber-finance-pending-sync-v1";
 
 function loadSession() {
   try {
-    const raw = sessionStorage.getItem(LOGIN_KEY);
+    const raw = localStorage.getItem(LOGIN_KEY) || sessionStorage.getItem(LOGIN_KEY);
+    if (raw && !localStorage.getItem(LOGIN_KEY)) {
+      localStorage.setItem(LOGIN_KEY, raw);
+    }
     return raw ? JSON.parse(raw) : null;
   } catch {
     return null;
@@ -42,10 +46,11 @@ function loadSession() {
 }
 
 function saveSession(user) {
-  sessionStorage.setItem(LOGIN_KEY, JSON.stringify(user));
+  localStorage.setItem(LOGIN_KEY, JSON.stringify(user));
 }
 
 function clearSession() {
+  localStorage.removeItem(LOGIN_KEY);
   sessionStorage.removeItem(LOGIN_KEY);
 }
 
@@ -63,6 +68,8 @@ function LoginPage({ onLogin }) {
   const [loading, setLoading] = useState(false);
 
   const isAdmin = role === "admin";
+  const isCaller = role === "caller";
+  const roleLabels = { admin: "Admin", caller: "Caller", customer: "Customer" };
 
   const handleSubmit = async (event) => {
     event.preventDefault();
@@ -78,13 +85,16 @@ function LoginPage({ onLogin }) {
       if (!response.ok) {
         throw new Error(data.error || "Invalid email or password.");
       }
-      const kind = String(data.role).toLowerCase() === "admin" ? "admin" : "customer";
-      if ((kind === "admin") !== isAdmin) {
-        throw new Error(data.role === "Admin"
-          ? "This account is an admin account. Switch to the Admin tab."
-          : "This account is a customer account. Switch to the Customer tab."
-        );
+      const accountRole = String(data.role || "Customer");
+      const accountKey = accountRole.toLowerCase() === "admin"
+        ? "admin"
+        : accountRole.toLowerCase() === "caller"
+          ? "caller"
+          : "customer";
+      if (accountKey !== role) {
+        throw new Error("This is a " + accountRole + " account. Switch to the " + roleLabels[accountKey] + " option.");
       }
+      const kind = accountKey === "admin" ? "admin" : accountKey === "caller" ? "caller" : "customer";
       onLogin({ ...data, kind });
     } catch (err) {
       setError(err.message || "Login failed. Please try again.");
@@ -184,7 +194,9 @@ function LoginPage({ onLogin }) {
             <p className="login-subtitle">
               {isAdmin
                 ? "Enter your admin credentials to access the console."
-                : "Sign in with your customer account to view your fleet and dues."}
+                : isCaller
+                  ? "Sign in with your caller account to open the assigned queue."
+                  : "Sign in with your customer account to view your fleet and dues."}
             </p>
           </div>
 
@@ -196,10 +208,23 @@ function LoginPage({ onLogin }) {
               aria-pressed={role === "admin"}
             >
               <span className="login-role-check" aria-hidden="true">✓</span>
-              <span className="login-role-icon">A</span>
+              <span className="login-role-icon"><Icon name="settings" /></span>
               <span className="login-role-text">
                 <strong>Admin</strong>
                 <small>Full control console</small>
+              </span>
+            </button>
+            <button
+              type="button"
+              className={role === "caller" ? "active" : ""}
+              onClick={() => { setRole("caller"); setError(""); }}
+              aria-pressed={role === "caller"}
+            >
+              <span className="login-role-check" aria-hidden="true">&#10003;</span>
+              <span className="login-role-icon"><Icon name="phone" /></span>
+              <span className="login-role-text">
+                <strong>Caller</strong>
+                <small>Assigned follow-ups</small>
               </span>
             </button>
             <button
@@ -209,7 +234,7 @@ function LoginPage({ onLogin }) {
               aria-pressed={role === "customer"}
             >
               <span className="login-role-check" aria-hidden="true">✓</span>
-              <span className="login-role-icon">C</span>
+              <span className="login-role-icon"><Icon name="people" /></span>
               <span className="login-role-text">
                 <strong>Customer</strong>
                 <small>Fleet, dues & marketplace</small>
@@ -270,9 +295,12 @@ function LoginPage({ onLogin }) {
 const navItems = [
   ["dashboard", "Dashboard", "home"],
   ["clients", "Clients", "people"],
+  ["fleet", "Fleet", "truck"],
   ["dues", "Smart Alert", "calendar"],
+  ["verification", "Verification", "check"],
   ["caller", "Caller", "phone"],
   ["marketplace", "Marketplace", "store"],
+  ["chat-requests", "Chat requests", "people"],
   ["reports", "Reports", "chart"],
   ["settings", "Settings", "settings"]
 ];
@@ -368,7 +396,11 @@ async function fetchBackendData(token) {
       const response = await fetch(`${API_BASE}/api${path}`, { headers: authHeaders(token) });
       if (!response.ok) {
         const result = await response.json().catch(() => ({}));
-        if (required) throw new Error(formatBackendError(result, response.status));
+        if (required) {
+          const backendError = new Error(formatBackendError(result, response.status));
+          backendError.status = response.status;
+          throw backendError;
+        }
         return [];
       }
       return response.json();
@@ -616,16 +648,22 @@ async function syncDataToBackend(data, token) {
   });
   const result = await response.json().catch(() => ({}));
   if (!response.ok) {
-    throw new Error(formatBackendError(result, response.status) || "Backend sync failed.");
+    const backendError = new Error(formatBackendError(result, response.status) || "Backend sync failed.");
+    backendError.status = response.status;
+    throw backendError;
   }
   return result;
 }
 
 export default function App() {
   const [session, setSession] = useState(loadSession);
+  const handleLogin = (nextSession) => {
+    saveSession(nextSession);
+    setSession(nextSession);
+  };
 
   if (!session) {
-    return <LoginPage onLogin={setSession} />;
+    return <LoginPage onLogin={handleLogin} />;
   }
 
   if (session.kind === "customer") {
@@ -638,13 +676,20 @@ export default function App() {
 }
 
 function AdminApp({ session, onLogout }) {
+  const marketplaceChat = useMarketplaceChat(API_BASE, session.token);
   const [data, setData] = useState(loadData);
-  const [section, setSection] = useState("dashboard");
+  const [section, setSection] = useState(session.kind === "caller" ? "caller" : "dashboard");
   const [lastSavedAt, setLastSavedAt] = useState(null);
   const [saveStatus, setSaveStatus] = useState("Ready");
   const [toast, setToast] = useState("");
   const [activeReport, setActiveReport] = useState(reportGroups[0][0]);
   const [selectedClientId, setSelectedClientId] = useState(null);
+  const visibleNavItems = useMemo(
+    () => session.role === "Caller"
+      ? navItems.filter(([key]) => key === "caller")
+      : navItems,
+    [session.role]
+  );
 
   const totals = useMemo(() => {
     const totalLiability = data.vehicles.reduce((sum, vehicle) => sum + liability(vehicle), 0);
@@ -675,22 +720,33 @@ function AdminApp({ session, onLogout }) {
   useEffect(() => {
     setSaveStatus("Loading");
     const pendingData = readPendingSync();
-    const load = pendingData
-      ? syncDataToBackend(pendingData, session.token).then(() => {
+    const load = (async () => {
+      if (!pendingData) return { data: await fetchBackendData(session.token), pendingSyncError: null };
+      try {
+        await syncDataToBackend(pendingData, session.token);
         clearPendingSync();
-        return fetchBackendData(session.token);
-      })
-      : fetchBackendData(session.token);
-    if (pendingData) setData(pendingData);
+        return { data: await fetchBackendData(session.token), pendingSyncError: null };
+      } catch (pendingSyncError) {
+        const message = String(pendingSyncError?.message || pendingSyncError || "").toLowerCase();
+        // A failed structural sync must not hide valid database data on reload.
+        if (message.includes("foreign key") || message.includes("client_imports")) clearPendingSync();
+        return { data: await fetchBackendData(session.token), pendingSyncError };
+      }
+    })();
     load
-      .then((backendData) => {
+      .then(({ data: backendData, pendingSyncError }) => {
         setData(backendData);
         setSaveStatus("Database");
-        setToast(pendingData ? "Pending changes synced to database" : "Database data loaded");
+        setToast(pendingSyncError ? "Database data loaded; pending local changes could not be synced." : (pendingData ? "Pending changes synced to database" : "Database data loaded"));
       })
       .catch((err) => {
         setSaveStatus("Error");
-        setToast(pendingData ? "Pending changes are kept on this device. Database sync failed." : (err.message || "Database load failed"));
+        if (err?.status === 401) {
+          clearSession();
+          onLogout();
+          return;
+        }
+        setToast(err.message || "Database load failed");
       });
   }, []);
 
@@ -1024,6 +1080,9 @@ function AdminApp({ session, onLogout }) {
         vehicles: record.status === "Sold"
           ? data.vehicles.map((item) => item.id === vehicle.id ? { ...item, status: "Sold" } : item)
           : data.vehicles,
+        dueTasks: record.status === "Sold"
+          ? data.dueTasks.map((task) => task.vehicleId === vehicle.id ? { ...task, status: "Closed" } : task)
+          : data.dueTasks,
         saleClosings: [record, ...(data.saleClosings ?? []).filter((item) => item.id !== record.id)]
       };
       persist(withAudit(updated, {
@@ -1076,7 +1135,13 @@ function AdminApp({ session, onLogout }) {
     };
     const updated = {
       ...data,
-      vehicles: data.vehicles.map((item) => (item.id === vehicleId ? nextVehicle : item))
+      vehicles: data.vehicles.map((item) => (item.id === vehicleId ? nextVehicle : item)),
+      listings: nextVehicle.status === "Sold"
+        ? data.listings.map((item) => item.vehicleId === vehicleId ? { ...item, status: "Sold" } : item)
+        : data.listings,
+      dueTasks: nextVehicle.status === "Sold"
+        ? data.dueTasks.map((task) => task.vehicleId === vehicleId ? { ...task, status: "Closed" } : task)
+        : data.dueTasks
     };
     const next = notify(updated, "Vehicle finance updated", vehicle.regNo, "fleet");
     persist(withAudit(next, {
@@ -1364,6 +1429,30 @@ function AdminApp({ session, onLogout }) {
         pdfImportedAt: new Date().toLocaleString("en-IN")
       };
 
+      const matchingVehicle = data.vehicles.find((vehicle) => (
+        vehicle.clientId === clientId && (
+          agreementMatches(vehicle.loanAccount, mergedRow.loanAccount) ||
+          (mergedRow.regNo && normalizeRegNo(baseRegNo(vehicle.regNo)) === normalizeRegNo(baseRegNo(mergedRow.regNo)))
+        )
+      ));
+      const vehicleId = matchingVehicle?.id || `v-pdf-${Date.now()}`;
+      const nextVehicle = matchingVehicle
+        ? mergePdfIntoVehicle(matchingVehicle, mergedRow)
+        : mergedRow.regNo
+          ? excelRowToVehicle(mergedRow, clientId, vehicleId)
+          : null;
+      const pdfDueTask = nextVehicle
+        ? buildPdfEmiDueTask(mergedRow, clientId, nextVehicle.id, nextVehicle.callerId || client?.callerId || "")
+        : null;
+      const existingEmiDue = nextVehicle
+        ? data.dueTasks.find((task) => task.vehicleId === nextVehicle.id && task.type === "EMI" && task.status !== "Closed")
+        : null;
+      const updatedDueTasks = pdfDueTask
+        ? existingEmiDue
+          ? data.dueTasks.map((task) => task.id === existingEmiDue.id ? { ...task, ...pdfDueTask, id: task.id, status: task.status === "Due" || task.status === "Overdue" ? pdfDueTask.status : task.status } : task)
+          : [pdfDueTask, ...data.dueTasks]
+        : data.dueTasks;
+
       let rowUpdated = false;
       const updatedClientImports = (data.clientImports ?? []).map((item) => {
         if (item.clientId !== clientId) return item;
@@ -1385,9 +1474,18 @@ function AdminApp({ session, onLogout }) {
       });
       const updated = {
         ...data,
-        clientImports: updatedClientImports
+        clientImports: updatedClientImports,
+        vehicles: nextVehicle
+          ? matchingVehicle
+            ? data.vehicles.map((vehicle) => vehicle.id === nextVehicle.id ? nextVehicle : vehicle)
+            : [nextVehicle, ...data.vehicles]
+          : data.vehicles,
+        dueTasks: updatedDueTasks
       };
-      const next = notify(updated, "Bank PDF imported", `${mergedRow.loanAccount} data saved for ${client?.name ?? "client"}.`, "clients");
+      const scheduleMessage = nextVehicle?.emiSchedule?.length
+        ? ` ${nextVehicle.emiSchedule.length} EMI schedule rows and the next due date were calculated.`
+        : " EMI schedule was not found; add EMI start and amount if the PDF has no readable schedule.";
+      const next = notify(updated, "Bank PDF imported", `${mergedRow.loanAccount} data saved for ${client?.name ?? "client"}.${scheduleMessage}`, "clients");
       persist(withAudit(next, {
         module: "Bank PDF",
         action: "Imported",
@@ -1509,22 +1607,27 @@ function AdminApp({ session, onLogout }) {
 
   const deleteClientAndAccount = async (client) => {
     if (!window.confirm(`Delete ${client.name} and their account?`)) return;
-    const userId = client.id.startsWith("u-") ? client.id : client.id.startsWith("c-u-") ? `u-${client.id.slice(2)}` : null;
     setSaveStatus("Deleting");
     setToast(`Deleting ${client.name}...`);
     try {
-      if (userId) {
-        const response = await fetch(`${API_BASE}/api/users/${userId}`, { method: "DELETE", headers: authHeaders(session.token) });
-        const result = await response.json();
-        if (!response.ok) throw new Error(result.error || "Delete failed");
-      }
+      const response = await fetch(`${API_BASE}/api/clients/${encodeURIComponent(client.id)}`, { method: "DELETE", headers: authHeaders(session.token) });
+      const result = await response.json();
+      if (!response.ok) throw new Error(result.error || "Delete failed");
       const clientVehicles = data.vehicles.filter((v) => v.clientId === client.id);
+      const removedVehicleIds = new Set(clientVehicles.map((vehicle) => vehicle.id));
+      const removedDueIds = new Set(data.dueTasks.filter((task) => task.clientId === client.id).map((task) => task.id));
       const updated = {
         ...data,
         clients: data.clients.filter((item) => item.id !== client.id),
         vehicles: data.vehicles.filter((v) => v.clientId !== client.id),
         dueTasks: data.dueTasks.filter((t) => t.clientId !== client.id),
-        listings: data.listings.filter((l) => !clientVehicles.some((v) => v.id === l.vehicleId))
+        listings: data.listings.filter((l) => !removedVehicleIds.has(l.vehicleId)),
+        clientImports: (data.clientImports ?? []).filter((item) => item.clientId !== client.id),
+        documents: (data.documents ?? []).filter((item) => item.clientId !== client.id),
+        verificationItems: (data.verificationItems ?? []).filter((item) => !removedDueIds.has(item.taskId)),
+        saleClosings: (data.saleClosings ?? []).filter((item) => item.clientId !== client.id),
+        marketplaceThreads: (data.marketplaceThreads ?? []).filter((item) => item.buyerClientId !== client.id && item.sellerClientId !== client.id),
+        callerActivities: (data.callerActivities ?? []).filter((item) => !removedDueIds.has(item.taskId))
       };
       persist(withAudit(updated, {
         module: "Clients",
@@ -1532,7 +1635,7 @@ function AdminApp({ session, onLogout }) {
         record: client.name,
         oldValue: "Active",
         newValue: "Removed",
-        remark: userId ? "Customer account deleted from database" : "Client removed from workspace"
+        remark: "Customer account and client data deleted from database"
       }), `${client.name} deleted`);
     } catch (err) {
       setSaveStatus("Error");
@@ -1593,12 +1696,15 @@ function AdminApp({ session, onLogout }) {
   const saveRolePermissions = async (event) => {
     event.preventDefault();
     const form = new FormData(event.currentTarget);
-    const roles = ["Admin", "Owner", "Caller", "Buyer"];
+    const roles = ["Admin", "Caller", "Customer"];
     const currentRows = Array.isArray(data.rolePermissions) ? data.rolePermissions : permissionRows;
-    const rolePermissions = currentRows.map((row) => [
-      row[0],
-      ...roles.map((role) => form.get(`permission-${role}-${row[0]}`)?.toString() || row[roles.indexOf(role) + 1] || "No")
-    ]);
+    const rolePermissions = currentRows.map((row) => {
+      const values = roles.map((role) => {
+        const columnIndex = role === "Admin" ? 1 : role === "Caller" ? 3 : 4;
+        return form.get(`permission-${role}-${row[0]}`)?.toString() || row[columnIndex] || "No";
+      });
+      return [row[0], values[0], row[2] || "No", values[1], values[2]];
+    });
 
     setSaveStatus("Saving");
     try {
@@ -1719,14 +1825,16 @@ function AdminApp({ session, onLogout }) {
     <main className="app-shell customer-shell">
       <aside className="sidebar customer-sidebar">
         <div className="brand">
-          <span className="brand-mark">K</span>
+          <span className="brand-mark">
+            <KuberBrandMark />
+          </span>
           <div>
             <strong>Kuber Finance</strong>
             <small>Admin web console</small>
           </div>
         </div>
         <nav className="sidebar-nav" aria-label="Admin modules">
-          {navItems.map(([key, label, icon]) => (
+          {visibleNavItems.map(([key, label, icon]) => (
             <button className={(section === key || (section === "client-profile" && key === "clients")) ? "active" : ""} key={key} onClick={() => openSection(key)}>
               <Icon name={icon} />
               {label}
@@ -1734,12 +1842,18 @@ function AdminApp({ session, onLogout }) {
           ))}
         </nav>
         <div className="sidebar-footer">
-          <div className="sidebar-footer-info">
-            <strong>{session.name}</strong>
-            <span>{session.role}</span>
+          <div className="sidebar-footer-inner">
+            <div className="sidebar-footer-info">
+              <strong>{session.name}</strong>
+              <span>{session.role}</span>
+            </div>
+            <span className="sidebar-footer-avatar" aria-hidden="true">
+              {session.name.slice(0, 1)}
+            </span>
           </div>
-          <button className="logout-button" type="button" onClick={onLogout} title="Sign out">
+          <button className="logout-button" type="button" onClick={onLogout} title="Sign out" aria-label="Sign out">
             <Icon name="logout" />
+            <span>Sign out</span>
           </button>
         </div>
       </aside>
@@ -1757,7 +1871,7 @@ function AdminApp({ session, onLogout }) {
         </header>
 
         {section === "dashboard" && <Dashboard data={data} totals={totals} setSection={openSection} />}
-        {section === "clients" && <Clients data={data} addClient={addClient} openClientProfile={openClientProfile} />}
+        {section === "clients" && <Clients data={data} addClient={addClient} openClientProfile={openClientProfile} deleteClientAndAccount={deleteClientAndAccount} />}
         {section === "client-profile" && <ClientProfile data={data} clientId={selectedClientId} backToClients={() => openSection("clients")} importClientExcel={importClientExcel} importClientPdf={importClientPdf} addManualClientVehicle={addManualClientVehicle} deleteClientVehicle={deleteClientVehicle} deleteClientAndAccount={deleteClientAndAccount} />}
         {toast && <button className="toast" onClick={() => setToast("")}>{toast}</button>}
 
@@ -1766,6 +1880,7 @@ function AdminApp({ session, onLogout }) {
         {section === "verification" && <Verification data={data} updateTaskStatus={updateTaskStatus} />}
         {section === "caller" && <CallerQueue data={data} saveCallerOutcome={saveCallerOutcome} openWhatsApp={openWhatsApp} updateWhatsAppStatus={updateWhatsAppStatus} />}
         {section === "marketplace" && <Marketplace data={data} updateListingStatus={updateListingStatus} saveSaleClosing={saveSaleClosing} openFleet={() => openSection("fleet")} />}
+        {section === "chat-requests" && <MarketplaceChat chat={marketplaceChat} admin />}
         {section === "reports" && <Reports data={data} activeReport={activeReport} setActiveReport={setActiveReport} />}
         {section === "import" && <ImportRows data={data} importValidRows={importValidRows} lastSavedAt={lastSavedAt} />}
         {section === "settings" && <Settings data={data} lastSavedAt={lastSavedAt} saveStatus={saveStatus} clearNotifications={clearNotifications} resetDemoData={resetDemoData} exportData={exportData} saveCommonPassword={saveCommonPassword} saveReminderSettings={saveReminderSettings} saveRolePermissions={saveRolePermissions} createCallerAccount={createCallerAccount} deleteCallerAccount={deleteCallerAccount} runCallerAssignment={runCallerAssignment} saveWhatsAppTemplates={saveWhatsAppTemplates} setSection={openSection} />}
@@ -1821,7 +1936,16 @@ function Dashboard({ data, totals, setSection }) {
   );
 }
 
-function Clients({ data, addClient, openClientProfile }) {
+function Clients({ data, addClient, openClientProfile, deleteClientAndAccount }) {
+  const [search, setSearch] = useState("");
+  const normalizedSearch = search.trim().toLowerCase();
+  const filteredClients = data.clients.filter((client) => {
+    if (!normalizedSearch) return true;
+    return [client.name, client.email, client.city, client.phone, client.id]
+      .filter(Boolean)
+      .some((value) => String(value).toLowerCase().includes(normalizedSearch));
+  });
+
   return (
     <section className="clients-layout">
       <section className="client-create-card">
@@ -1845,15 +1969,27 @@ function Clients({ data, addClient, openClientProfile }) {
         <div className="clients-table-head">
           <div>
             <h2>Client Directory</h2>
-            <span>{data.clients.length} records</span>
+            <span>{filteredClients.length} of {data.clients.length} records</span>
           </div>
           <span className="client-total-pill">{data.clients.length} Clients</span>
         </div>
+        <div className="clients-directory-toolbar">
+          <label className="clients-search-field">
+            <span><Icon name="search" />Search client</span>
+            <input
+              value={search}
+              onChange={(event) => setSearch(event.target.value)}
+              placeholder="Name, email, city, phone or client ID"
+              aria-label="Search clients"
+            />
+          </label>
+          <span className="clients-search-count">{filteredClients.length} shown</span>
+        </div>
         <div className="clients-table-scroll">
         <table className="clients-table">
-          <thead><tr><th>Client</th><th>City</th><th>Phone</th><th>Vehicles</th><th>Caller</th><th>Profile</th></tr></thead>
+          <thead><tr><th>Client</th><th>City</th><th>Phone</th><th>Vehicles</th><th>Caller</th><th>Actions</th></tr></thead>
           <tbody>
-            {data.clients.map((client) => {
+            {filteredClients.map((client) => {
               const vehicleCount = data.vehicles.filter((vehicle) => vehicle.clientId === client.id && !isBodyRegNo(vehicle.regNo)).length;
               const callerName = users.find((user) => user.id === client.callerId)?.name;
               return (
@@ -1868,10 +2004,24 @@ function Clients({ data, addClient, openClientProfile }) {
                   <td className="client-phone-cell">{client.phone}</td>
                   <td><span className="client-count-pill">{vehicleCount}</span></td>
                   <td>{callerName}</td>
-                  <td><button className="client-profile-button" type="button" onClick={() => openClientProfile(client.id)}><Icon name="people" />Profile</button></td>
+                  <td>
+                    <div className="client-row-actions">
+                      <button className="client-profile-button" type="button" onClick={() => openClientProfile(client.id)}>
+                        <Icon name="people" />Profile
+                      </button>
+                      <button className="client-delete-button" type="button" onClick={() => deleteClientAndAccount(client)} title={`Delete ${client.name}`} aria-label={`Delete ${client.name}`}>
+                        <Icon name="trash" />Delete
+                      </button>
+                    </div>
+                  </td>
                 </tr>
               );
             })}
+            {filteredClients.length === 0 && (
+              <tr>
+                <td className="clients-empty-cell" colSpan="6">No clients match your search.</td>
+              </tr>
+            )}
           </tbody>
         </table>
         </div>
@@ -1987,7 +2137,7 @@ function ClientProfile({ data, clientId, backToClients, importClientExcel, impor
           <div className="profile-copy">
             <span>Client profile</span>
             <h2>{client.name}</h2>
-            <p>{client.city} | {client.phone}</p>
+            <p>{client.city} | {client.phone} | {client.email || "No email"}</p>
           </div>
         </div>
         <div className="profile-total">
@@ -2112,6 +2262,7 @@ function ClientProfile({ data, clientId, backToClients, importClientExcel, impor
           <div className="detail-grid">
             <Pair label="Client ID" value={client.id} />
             <Pair label="Name" value={client.name} />
+            <Pair label="Email / Login ID" value={client.email || "Not available"} />
             <Pair label="City" value={client.city} />
             <Pair label="Phone" value={client.phone} />
             <Pair label="Assigned caller" value={caller?.name ?? "Unassigned"} />
@@ -2338,32 +2489,35 @@ function Dues({ data, updateTaskStatus, assignCallerToTask }) {
   return (
     <section className="dues-board">
       <div className="dues-summary">
-        <article>
-          <span>Vehicle Alerts</span>
-          <strong>{smartAlerts.length}</strong>
+        <article className="dues-summary-card summary-alerts">
+          <div className="dues-summary-icon"><AlertSvg name="calendar" /></div>
+          <div><span>Vehicle alerts</span><strong>{smartAlerts.length}</strong><small>Renewals to review</small></div>
         </article>
-        <article>
-          <span>Expired</span>
-          <strong>{expiredAlerts.length}</strong>
+        <article className="dues-summary-card summary-expired">
+          <div className="dues-summary-icon"><AlertSvg name="bell" /></div>
+          <div><span>Expired</span><strong>{expiredAlerts.length}</strong><small>Need attention now</small></div>
         </article>
-        <article>
-          <span>Next 10 days</span>
-          <strong>{soonAlerts.length}</strong>
+        <article className="dues-summary-card summary-soon">
+          <div className="dues-summary-icon"><AlertSvg name="calendar" /></div>
+          <div><span>Next 10 days</span><strong>{soonAlerts.length}</strong><small>Upcoming renewals</small></div>
         </article>
-        <article>
-          <span>Payment</span>
-          <strong>{formatMoney(totalDue)}</strong>
+        <article className="dues-summary-card summary-payment">
+          <div className="dues-summary-icon"><AlertSvg name="money" /></div>
+          <div><span>Open payment</span><strong>{formatMoney(totalDue)}</strong><small>{openTasks.length} active due records</small></div>
         </article>
       </div>
       <section className="smart-alert-panel">
         <div className="smart-alert-head">
-          <h2>Vehicle Expiry Details</h2>
-          <span>{smartAlerts.length} alerts</span>
+          <div className="smart-alert-title">
+            <div className="smart-alert-head-icon"><AlertSvg name="calendar" /></div>
+            <div><span className="smart-alert-kicker">Compliance watch</span><h2>Vehicle expiry details</h2></div>
+          </div>
+          <span className="smart-alert-count">{smartAlerts.length} alerts</span>
         </div>
         <div className="smart-alert-list">
           {smartAlerts.map((alert) => (
             <article className="smart-alert-card" key={alert.id}>
-              <div className="smart-alert-icon"><Icon name="calendar" /></div>
+              <div className="smart-alert-icon"><AlertSvg name="calendar" /></div>
               <div className="smart-alert-copy">
                 <strong>{alert.vehicle}</strong>
                 <span>{alert.client}</span>
@@ -2376,13 +2530,16 @@ function Dues({ data, updateTaskStatus, assignCallerToTask }) {
               <Badge label={alert.status} />
             </article>
           ))}
-          {smartAlerts.length === 0 && <Empty text="No vehicle expiry alerts found." />}
+          {smartAlerts.length === 0 && <div className="smart-alert-empty"><AlertSvg name="check" /><div><strong>Everything is up to date</strong><span>No vehicle expiry alerts found.</span></div></div>}
         </div>
       </section>
       <section className="smart-alert-panel">
         <div className="smart-alert-head">
-          <h2>Payment Alerts</h2>
-          <span>{openTasks.length} open</span>
+          <div className="smart-alert-title">
+            <div className="smart-alert-head-icon payment"><AlertSvg name="money" /></div>
+            <div><span className="smart-alert-kicker">Collection queue</span><h2>Payment alerts</h2></div>
+          </div>
+          <span className="smart-alert-count">{openTasks.length} open</span>
         </div>
         <div className="dues-list">
           {data.dueTasks.map((task) => (
@@ -2563,7 +2720,7 @@ function VehicleDetailModal({ row, onClose }) {
           </div>
           <div className="detail-modal-actions">
             <Badge label={row.financeStatus || "Detail"} />
-            <button className="icon-button close-button" type="button" title="Close" aria-label="Close details" onClick={onClose}>x</button>
+            <button className="icon-button close-button" type="button" title="Close" aria-label="Close details" onClick={onClose}><Icon name="close" /></button>
           </div>
         </div>
         <div className="detail-summary-strip">
@@ -2745,6 +2902,13 @@ function Verification({ data, updateTaskStatus }) {
     <section className="grid-list">
       {data.verificationItems.map((item) => {
         const task = data.dueTasks.find((entry) => entry.id === item.taskId);
+        const proofDocument = (data.documents ?? []).find((document) => document.taskId === item.taskId);
+        const proofDetails = (item.details ?? []).map(([label, value]) => [
+          label,
+          /proof\s*file/i.test(label) && proofDocument?.fileName
+            ? proofDocument.fileName
+            : value
+        ]);
         return (
           <article className="asset" key={item.id}>
             <div className="card-head">
@@ -2754,7 +2918,22 @@ function Verification({ data, updateTaskStatus }) {
               </div>
               <Badge label={task?.status ?? "Review"} />
             </div>
-            {item.details.map(([label, value]) => <Pair key={label} label={label} value={value} />)}
+            {proofDetails.map(([label, value]) => <Pair key={label} label={label} value={value} />)}
+            <div className="verification-proof-file">
+              <div className="verification-proof-identity">
+                <span className="verification-proof-icon"><ProofFileIcon /></span>
+                <div>
+                  <strong>{proofDocument?.fileName || "Proof file"}</strong>
+                  <small>{proofDocument ? `${proofDocument.mimeType || "Document"} · ${Math.max(1, Math.round((proofDocument.size || 0) / 1024))} KB` : "File record found, but content is unavailable."}</small>
+                </div>
+              </div>
+              {proofDocument?.dataUrl && (
+                <div className="verification-proof-actions">
+                  <a className="button-link" href={proofDocument.dataUrl} target="_blank" rel="noreferrer"><Icon name="eye" />Open file</a>
+                  <a className="button-link secondary" href={proofDocument.dataUrl} download={proofDocument.fileName}><Icon name="download" />Download</a>
+                </div>
+              )}
+            </div>
             <div className="audit-box">
               {item.audit.map(([label, value]) => <Pair key={label} label={label} value={value} />)}
             </div>
@@ -2776,18 +2955,29 @@ function CallerQueue({ data, saveCallerOutcome, openWhatsApp, updateWhatsAppStat
   const whatsappLogs = data.whatsappLogs ?? [];
   return (
     <section className="stack">
+      <section className="caller-page-header">
+        <div>
+          <p className="eyebrow">Collection workspace</p>
+          <h2>Caller queue</h2>
+          <p>Work through open dues and record the next customer follow-up.</p>
+        </div>
+        <div className="caller-queue-stats">
+          <div><span>Open dues</span><strong>{data.dueTasks.filter((task) => task.status !== "Closed").length}</strong></div>
+          <div><span>Follow-ups</span><strong>{data.callerActivities.length}</strong></div>
+        </div>
+      </section>
       <section className="grid-list caller-grid">
         {data.dueTasks.map((task) => {
           const client = getDataClient(data, task.clientId);
           const history = data.callerActivities.filter((item) => item.taskId === task.id);
           return (
-            <article className="asset" key={task.id}>
-              <div className="card-head">
+            <article className="asset caller-task-card" key={task.id}>
+              <div className="card-head caller-task-head">
                 <div>
-                  <strong>{client?.name || "Unknown customer"}</strong>
-                  <span>{task.type} | {formatDisplayDate(task.dueDate)} | {task.priority}</span>
+                  <div className="caller-customer-line"><span className="caller-customer-avatar">{(client?.name || "?").slice(0, 1)}</span><strong>{client?.name || "Unknown customer"}</strong></div>
+                  <span className="caller-due-meta">{task.type} <i /> {formatDisplayDate(task.dueDate)}</span>
                 </div>
-                <b>{formatMoney(task.amount)}</b>
+                <div className="caller-amount-block"><span className={`caller-priority ${String(task.priority || "Medium").toLowerCase()}`}>{task.priority || "Medium"}</span><b>{formatMoney(task.amount)}</b></div>
               </div>
               <div className="whatsapp-action">
                 <label>WhatsApp template<select defaultValue={whatsappTemplates[0]?.id || ""} disabled={!whatsappTemplates.length} id={`wa-template-${task.id}`}>
@@ -2795,7 +2985,7 @@ function CallerQueue({ data, saveCallerOutcome, openWhatsApp, updateWhatsAppStat
                 </select></label>
                 <button type="button" disabled={!whatsappTemplates.length} onClick={() => openWhatsApp(task, document.getElementById(`wa-template-${task.id}`)?.value)}><Icon name="phone" />Open WhatsApp</button>
               </div>
-              <form className="form-grid compact-form" onSubmit={(event) => saveCallerOutcome(event, task)}>
+              <form className="form-grid compact-form caller-outcome-form" onSubmit={(event) => saveCallerOutcome(event, task)}>
                 <label>Outcome<select name="outcome">{callerOutcomes.map((item) => <option key={item.outcome}>{item.outcome}</option>)}</select></label>
                 <label>Channel<select name="channel"><option>Call</option><option>WhatsApp</option><option>Manual</option></select></label>
                 <label>Expected amount<input name="expectedAmount" placeholder="INR 54,000" /></label>
@@ -2803,11 +2993,12 @@ function CallerQueue({ data, saveCallerOutcome, openWhatsApp, updateWhatsAppStat
                 <label className="span-2">Notes<textarea name="notes" placeholder="Customer note" /></label>
                 <button type="submit"><Icon name="phone" />Save outcome</button>
               </form>
-              <div className="history">
+              {history.length > 0 ? <div className="history caller-history">
+                <span className="caller-history-label">Recent activity</span>
                 {history.slice(0, 2).map((item) => (
-                  <p key={item.id}><strong>{item.outcome}</strong><span>{item.notes}</span></p>
+                  <p key={item.id}><strong>{item.outcome}</strong><span>{item.notes || "No note added"}</span></p>
                 ))}
-              </div>
+              </div> : <div className="caller-history-empty"><Icon name="clock" />No previous activity</div>}
             </article>
           );
         })}
@@ -2844,8 +3035,8 @@ function Marketplace({ data, updateListingStatus, saveSaleClosing, openFleet }) 
   const activeFilterCount = Object.entries(filters).filter(([key, value]) => key === "location" || key === "maxPrice" ? Boolean(value) : value !== "All").length;
 
   return (
-    <section className="stack">
-      <div className="section-intro">
+    <section className="stack admin-marketplace-page">
+      <div className="section-intro admin-marketplace-hero">
         <div>
           <p className="eyebrow">Listings workspace</p>
           <h2>Vehicle marketplace</h2>
@@ -2873,12 +3064,12 @@ function Marketplace({ data, updateListingStatus, saveSaleClosing, openFleet }) 
         <h3>No marketplace listings yet</h3>
         <p>Create a sale listing from Fleet first. It will appear here for approval and bank closing updates.</p>
         <button type="button" onClick={openFleet}><Icon name="plus" />Create listing from Fleet</button>
-      </section> : filteredListings.length > 0 ? <section className="grid-list">
+      </section> : filteredListings.length > 0 ? <section className="grid-list admin-marketplace-listings">
       {filteredListings.map((listing) => {
         const listingPhoto = listing.photos?.[0];
         const closing = (data.saleClosings ?? []).find((item) => item.listingId === listing.id);
         return (
-          <article className="asset" key={listing.id}>
+          <article className="asset admin-marketplace-card" key={listing.id}>
             {listingPhoto?.dataUrl && <img className="listing-photo" src={listingPhoto.dataUrl} alt={listing.title} />}
             <div className="card-head">
               <div>
@@ -2930,7 +3121,7 @@ function MarketplaceVehicleModal({ listing, vehicle, closing, isAdmin = false, o
       <section className="detail-modal marketplace-detail-modal" role="dialog" aria-modal="true" aria-labelledby="marketplace-detail-title" onMouseDown={(event) => event.stopPropagation()}>
         <div className="detail-modal-head">
           <div><p className="eyebrow">Marketplace listing</p><h2 id="marketplace-detail-title">{listing.title}</h2><p>{listing.location} | {listing.condition} condition</p></div>
-          <div className="detail-modal-actions"><Badge label={listing.status} /><button className="icon-button close-button" type="button" aria-label="Close details" onClick={onClose}>x</button></div>
+          <div className="detail-modal-actions"><Badge label={listing.status} /><button className="icon-button close-button" type="button" aria-label="Close details" onClick={onClose}><Icon name="close" /></button></div>
         </div>
         {listing.photos?.length > 0 && <div className="marketplace-detail-photos">{listing.photos.map((photo) => photo.dataUrl && <img key={photo.id} src={photo.dataUrl} alt={photo.fileName} />)}</div>}
         <div className="detail-summary-strip">
@@ -3099,14 +3290,13 @@ function Settings({ data, lastSavedAt, saveStatus, clearNotifications, resetDemo
     Admin: admin,
     Owner: owner,
     Caller: caller,
-    Buyer: buyer
+    Customer: buyer
   }));
   const permissionOptions = ["Yes", "No", "Assigned only", "Own fleet", "Optional", "Reports only"];
   const roleActions = [
     { role: "Admin", section: "clients", icon: "people", label: "Manage clients", allowed: accessRows.filter((row) => row.Admin !== "No").length },
-    { role: "Owner", section: "marketplace", icon: "store", label: "Open marketplace", allowed: accessRows.filter((row) => row.Owner !== "No").length },
     { role: "Caller", section: "caller", icon: "phone", label: "Open queue", allowed: accessRows.filter((row) => row.Caller !== "No").length },
-    { role: "Buyer", section: "marketplace", icon: "store", label: "View listings", allowed: accessRows.filter((row) => row.Buyer !== "No").length }
+    { role: "Customer", section: "marketplace", icon: "store", label: "View listings", allowed: accessRows.filter((row) => row.Customer !== "No").length }
   ];
 
   return (
@@ -3256,6 +3446,7 @@ const customerNavItems = [
 ];
 
 function CustomerPortal({ session, onLogout }) {
+  const marketplaceChat = useMarketplaceChat(API_BASE, session.token);
   const [section, setSection] = useState("dashboard");
   const [data, setData] = useState(loadData);
   const [loadError, setLoadError] = useState("");
@@ -3281,6 +3472,11 @@ function CustomerPortal({ session, onLogout }) {
       })
       .catch((error) => {
         if (!active) return;
+        if (error?.status === 401) {
+          clearSession();
+          onLogout();
+          return;
+        }
         setLoadError(error.message || "Customer data could not be loaded from the server.");
       });
     return () => {
@@ -3299,15 +3495,23 @@ function CustomerPortal({ session, onLogout }) {
     [data, customerClientId]
   );
   const myDues = useMemo(
-    () => data.dueTasks.filter((t) => t.clientId === customerClientId),
-    [data, customerClientId]
+    () => {
+      const soldVehicleIds = new Set(myVehicles.filter((vehicle) => vehicle.status === "Sold").map((vehicle) => vehicle.id));
+      return data.dueTasks.filter((task) => task.clientId === customerClientId && !soldVehicleIds.has(task.vehicleId));
+    },
+    [data, customerClientId, myVehicles]
   );
   const myListings = useMemo(
     () => data.listings.filter((l) => myVehicles.some((v) => v.id === l.vehicleId)),
     [data, myVehicles]
   );
   const marketplaceListings = useMemo(
-    () => data.listings.filter((l) => ["Active", "Reserved"].includes(l.status) || myVehicles.some((v) => v.id === l.vehicleId)),
+    () => data.listings.filter((l) => {
+      if (!["Active", "Reserved"].includes(l.status)) return false;
+      const vehicle = myVehicles.find((item) => item.id === l.vehicleId);
+      const closing = (data.saleClosings ?? []).find((item) => item.listingId === l.id);
+      return vehicle?.status !== "Sold" && closing?.status !== "Sold";
+    }),
     [data, myVehicles]
   );
   const myImportedAssets = useMemo(
@@ -3340,106 +3544,7 @@ function CustomerPortal({ session, onLogout }) {
     setLoadError(message || "");
   };
 
-  const saveCustomerMarketplaceMessage = async (listingId, messageText, attachment = null) => {
-    if (!canUsePermission(data, session.role, "Owner chat")) {
-      setLoadError("Permission denied for marketplace chat.");
-      return;
-    }
-    const listing = data.listings.find((item) => item.id === listingId);
-    const vehicle = data.vehicles.find((item) => item.id === listing?.vehicleId);
-    const sellerClientId = vehicle?.clientId ?? "";
-    const text = messageText.trim();
-    if (!listing || (!text && !attachment) || !customerClientId) return;
-    const now = new Date().toLocaleString("en-IN");
-    const existingThread = (data.marketplaceThreads ?? []).find((thread) => thread.listingId === listingId && thread.buyerClientId === customerClientId);
-    const message = {
-      id: `msg-${Date.now()}`,
-      senderId: session.id,
-      senderName: myClient?.name ?? session.name,
-      text,
-      sentAt: now,
-      read: false,
-      attachment
-    };
-    const nextThread = existingThread ? {
-      ...existingThread,
-      status: existingThread.status === "Interested" ? "Negotiating" : existingThread.status,
-      messages: [...(existingThread.messages ?? []), message],
-      updatedAt: now
-    } : {
-      id: `mt-${Date.now()}`,
-      listingId,
-      buyerClientId: customerClientId,
-      sellerClientId,
-      status: "Interested",
-      messages: [message],
-      reported: false,
-      blocked: false,
-      updatedAt: now
-    };
-    const updated = {
-      ...data,
-      marketplaceThreads: [nextThread, ...(data.marketplaceThreads ?? []).filter((thread) => thread.id !== nextThread.id)],
-      notifications: [
-        { id: `n-${Date.now()}`, title: "Marketplace chat", detail: `${message.senderName} sent a message on ${listing.title}`, target: "chats", unread: true },
-        ...(data.notifications ?? [])
-      ],
-      auditLogs: [
-        {
-          id: `a-${Date.now()}`,
-          module: "Marketplace Chat",
-          action: "Message Sent",
-          record: listing.title,
-          oldValue: existingThread?.status ?? "No thread",
-          newValue: nextThread.status,
-          remark: text,
-          at: now
-        },
-        ...(data.auditLogs ?? [])
-      ]
-    };
-    await persistCustomerData(updated, "Message saved");
-  };
 
-  const updateCustomerMarketplaceThreadStatus = async (listingId, status) => {
-    if (!canUsePermission(data, session.role, "Owner chat")) {
-      setLoadError("Permission denied for marketplace chat.");
-      return;
-    }
-    const listing = data.listings.find((item) => item.id === listingId);
-    const vehicle = data.vehicles.find((item) => item.id === listing?.vehicleId);
-    const sellerClientId = vehicle?.clientId ?? "";
-    if (!listing || !customerClientId) return;
-    const now = new Date().toLocaleString("en-IN");
-    const existingThread = (data.marketplaceThreads ?? []).find((thread) => thread.listingId === listingId && thread.buyerClientId === customerClientId);
-    const nextThread = existingThread ? {
-      ...existingThread,
-      status,
-      reported: status === "Reported" ? true : existingThread.reported,
-      blocked: status === "Blocked" ? true : existingThread.blocked,
-      updatedAt: now
-    } : {
-      id: `mt-${Date.now()}`,
-      listingId,
-      buyerClientId: customerClientId,
-      sellerClientId,
-      status,
-      messages: [],
-      reported: status === "Reported",
-      blocked: status === "Blocked",
-      updatedAt: now
-    };
-    const updated = {
-      ...data,
-      marketplaceThreads: [nextThread, ...(data.marketplaceThreads ?? []).filter((thread) => thread.id !== nextThread.id)],
-      listings: status === "Reserved" ? data.listings.map((item) => item.id === listingId ? { ...item, status: "Reserved" } : item) : data.listings,
-      notifications: [
-        { id: `n-${Date.now()}`, title: `Chat ${status}`, detail: listing.title, target: "chats", unread: true },
-        ...(data.notifications ?? [])
-      ]
-    };
-    await persistCustomerData(updated, `Chat ${status}`);
-  };
 
   const submitCustomerListing = async (event) => {
     event.preventDefault();
@@ -3559,11 +3664,13 @@ function CustomerPortal({ session, onLogout }) {
   };
 
   return (
-    <main className="app-shell">
+    <main className="app-shell customer-shell">
       {loadError && <div className="toast error" role="alert">{loadError}</div>}
-      <aside className="sidebar">
+      <aside className="sidebar customer-sidebar">
         <div className="brand">
-          <span>K</span>
+          <span className="brand-mark">
+            <KuberBrandMark />
+          </span>
           <div>
             <strong>Kuber Finance</strong>
             <small>Customer portal</small>
@@ -3576,18 +3683,28 @@ function CustomerPortal({ session, onLogout }) {
               className={section === item[0] ? "active" : ""}
               onClick={() => openPortalSection(item[0])}
             >
-              <Icon name={item[2]} />
+              {item[0] === "documents" ? (
+                <span className="customer-nav-icon"><ProofFileIcon /></span>
+              ) : (
+                <Icon name={item[2]} />
+              )}
               {item[1]}
             </button>
           ))}
         </nav>
         <div className="sidebar-footer">
-          <div className="sidebar-footer-info">
-            <strong>{myClient?.name ?? session.name}</strong>
-            <span>{myClient?.city ?? session.role}</span>
+          <div className="sidebar-footer-inner">
+            <div className="sidebar-footer-info">
+              <strong>{myClient?.name ?? session.name}</strong>
+              <span>{myClient?.city ?? session.role}</span>
+            </div>
+            <span className="sidebar-footer-avatar" aria-hidden="true">
+              {(myClient?.name ?? session.name).slice(0, 1)}
+            </span>
           </div>
-          <button className="logout-button" type="button" onClick={onLogout} title="Sign out">
+          <button className="logout-button" type="button" onClick={onLogout} title="Sign out" aria-label="Sign out">
             <Icon name="logout" />
+            <span>Sign out</span>
           </button>
         </div>
       </aside>
@@ -3604,7 +3721,7 @@ function CustomerPortal({ session, onLogout }) {
               <strong>{myClient?.name ?? session.name}</strong>
               <small>{myClient?.city ?? ""}</small>
             </div>
-            <span className="customer-profile-caret" aria-hidden="true">v</span>
+            <span className="customer-profile-caret" aria-hidden="true"><Icon name="chevron-down" /></span>
           </div>
         </header>
 
@@ -3625,23 +3742,14 @@ function CustomerPortal({ session, onLogout }) {
         {sectionAllowed && section === "dues" && (
           <CustomerDues dues={myDues} vehicles={myVehicles} submitCustomerProof={submitCustomerProof} />
         )}
-        {sectionAllowed && section === "documents" && (
-          <CustomerDocuments documents={myDocuments} vehicles={myVehicles} />
-        )}
+       {sectionAllowed && section === "documents" && (
+          <CustomerDocuments documents={myDocuments} vehicles={myVehicles} setSection={openPortalSection} />
+       )}
         {sectionAllowed && section === "marketplace" && (
-          <CustomerMarketplace listings={marketplaceListings} vehicles={data.vehicles} saleClosings={data.saleClosings} myVehicles={myVehicles} myVehicleIds={new Set(myVehicles.map((vehicle) => vehicle.id))} submitListing={submitCustomerListing} />
+          <CustomerMarketplace chat={marketplaceChat} listings={marketplaceListings} vehicles={data.vehicles} saleClosings={data.saleClosings} myVehicles={myVehicles} myVehicleIds={new Set(myVehicles.map((vehicle) => vehicle.id))} submitListing={submitCustomerListing} setSection={openPortalSection} />
         )}
         {sectionAllowed && section === "chats" && (
-          <CustomerChats
-            listings={marketplaceListings}
-            vehicles={data.vehicles}
-            clients={data.clients}
-            threads={data.marketplaceThreads ?? []}
-            customerClientId={customerClientId}
-            session={session}
-            saveMessage={saveCustomerMarketplaceMessage}
-            updateThreadStatus={updateCustomerMarketplaceThreadStatus}
-          />
+          <MarketplaceChat chat={marketplaceChat} clientId={customerClientId} />
         )}
       </section>
     </main>
@@ -3687,7 +3795,7 @@ function CustomerDashboard({ client, vehicles, dues, openDues, totalLiability, s
         <section className="panel customer-summary-panel">
           <div className="customer-panel-head">
             <div><span className="customer-panel-icon"><Icon name="truck" /></span><h2>My Fleet Summary</h2></div>
-            <button type="button" aria-label="View fleet" onClick={() => setSection("fleet")}>&gt;</button>
+            <button type="button" aria-label="View fleet" onClick={() => setSection("fleet")}><Icon name="chevron-right" /></button>
           </div>
           {vehicles.length > 0 && (
             <div className="customer-table-head customer-fleet-table-head">
@@ -3710,7 +3818,7 @@ function CustomerDashboard({ client, vehicles, dues, openDues, totalLiability, s
         <section className="panel customer-summary-panel">
           <div className="customer-panel-head">
             <div><span className="customer-panel-icon"><Icon name="calendar" /></span><h2>Recent Dues</h2></div>
-            <button type="button" aria-label="View dues" onClick={() => setSection("dues")}>&gt;</button>
+            <button type="button" aria-label="View dues" onClick={() => setSection("dues")}><Icon name="chevron-right" /></button>
           </div>
           {openDues.length > 0 && (
             <div className="customer-table-head customer-dues-table-head">
@@ -3860,17 +3968,17 @@ function CustomerDues({ dues, vehicles, submitCustomerProof }) {
   return (
     <section className="dues-board">
       <div className="dues-summary">
-        <article>
-          <span>Open dues</span>
-          <strong>{open.length}</strong>
+        <article className="dues-summary-card summary-alerts">
+          <div className="dues-summary-icon"><AlertSvg name="calendar" /></div>
+          <div><span>Open dues</span><strong>{open.length}</strong><small>Needs attention</small></div>
         </article>
-        <article>
-          <span>Closed</span>
-          <strong>{closed.length}</strong>
+        <article className="dues-summary-card summary-expired">
+          <div className="dues-summary-icon"><AlertSvg name="check" /></div>
+          <div><span>Closed</span><strong>{closed.length}</strong><small>Completed records</small></div>
         </article>
-        <article>
-          <span>Total outstanding</span>
-          <strong>{formatMoney(totalOpen)}</strong>
+        <article className="dues-summary-card summary-payment">
+          <div className="dues-summary-icon"><AlertSvg name="money" /></div>
+          <div><span>Total outstanding</span><strong>{formatMoney(totalOpen)}</strong><small>Open due amount</small></div>
         </article>
       </div>
       <section className="smart-alert-panel">
@@ -3906,7 +4014,7 @@ function CustomerProofForm({ task, submitCustomerProof }) {
   const isInsurance = task.type === "Insurance";
   return (
     <details className="customer-proof-details">
-      <summary><Icon name="upload" /> Submit details &amp; proof</summary>
+      <summary><span className="proof-summary-icon"><ProofFileIcon /></span> Submit details &amp; proof <span className="proof-summary-toggle" aria-hidden="true"><Icon name="plus" /></span></summary>
       <form className="form-grid compact-form" onSubmit={(event) => {
         event.preventDefault();
         const formData = new FormData(event.currentTarget);
@@ -3936,59 +4044,116 @@ function CustomerProofForm({ task, submitCustomerProof }) {
         </>}
         <label className="span-2">Additional note<textarea name="customerNote" placeholder="Add a note for Admin (optional)" /></label>
         <label className="span-2">Proof document<input name="proofFile" type="file" accept="application/pdf,image/*" required /></label>
-        <button className="span-2" type="submit"><Icon name="upload" />Submit for verification</button>
+        <button className="span-2" type="submit"><ProofFileIcon />Submit for verification</button>
       </form>
     </details>
   );
 }
 
-function CustomerDocuments({ documents, vehicles }) {
+function CustomerDocuments({ documents, vehicles, setSection }) {
   return (
-    <section className="stack">
-      <div className="customer-section-header">
-        <h2>Uploaded Documents</h2>
+    <section className="stack customer-documents-page">
+      <div className="customer-section-header customer-documents-header">
+        <div className="customer-documents-section-title">
+          <p>Document center</p>
+          <h2>Uploaded Documents</h2>
+        </div>
         <span>{documents.length} document{documents.length !== 1 ? "s" : ""}</span>
       </div>
-      <div className="grid-list">
+      <div className="customer-documents-grid">
         {documents.map((document) => {
           const vehicle = vehicles.find((item) => item.id === document.vehicleId);
           return (
-            <article className="asset" key={document.id}>
-              <div className="card-head">
-                <div>
-                  <strong>{document.fileName}</strong>
-                  <span>{document.type} | {vehicle?.regNo ?? "-"}</span>
+            <article className="asset customer-document-card" key={document.id}>
+              <div className="customer-document-card-head">
+                <div className="customer-document-title">
+                  <span className="customer-document-icon"><ProofFileIcon /></span>
+                  <div>
+                    <strong>{document.fileName}</strong>
+                    <span>{document.type} <i aria-hidden="true">|</i> {vehicle?.regNo ?? "-"}</span>
+                  </div>
                 </div>
                 <Badge label={`${Math.max(1, Math.round((document.size || 0) / 1024))} KB`} />
               </div>
-              <Pair label="Uploaded by" value={document.uploadedBy || "-"} />
-              <Pair label="Uploaded at" value={document.uploadedAt || "-"} />
-              <Pair label="Note" value={document.note || "-"} />
+              <div className="customer-document-meta">
+                <Pair label="Uploaded by" value={document.uploadedBy || "-"} />
+                <Pair label="Uploaded at" value={document.uploadedAt || "-"} />
+                <Pair label="Note" value={document.note || "-"} />
+              </div>
               {document.dataUrl && (
-                <a className="button-link" href={document.dataUrl} target="_blank" rel="noreferrer">
-                  <Icon name="upload" />
+                <a className="button-link customer-document-open" href={document.dataUrl} target="_blank" rel="noreferrer">
+                  <ProofFileIcon />
                   Open file
                 </a>
               )}
             </article>
           );
         })}
-        {documents.length === 0 && <Empty text="No uploaded documents yet." />}
+        {documents.length === 0 && (
+          <section className="customer-documents-empty">
+            <span className="customer-documents-empty-icon"><ProofFileIcon /></span>
+            <div className="customer-documents-empty-copy">
+              <p>DOCUMENT CENTER</p>
+              <h3>No documents uploaded yet</h3>
+              <span>Payment receipts, insurance certificates and other proofs will appear here after submission.</span>
+            </div>
+            <button type="button" onClick={() => setSection?.("dues")}>
+              <Icon name="upload" />
+              Go to dues
+            </button>
+          </section>
+        )}
       </div>
     </section>
   );
 }
 
-function CustomerMarketplace({ listings, vehicles, saleClosings = [], myVehicles, myVehicleIds, submitListing }) {
+function CustomerMarketplace({ chat, listings, vehicles, saleClosings = [], myVehicles, myVehicleIds, submitListing, setSection }) {
   const [selectedListing, setSelectedListing] = useState(null);
+  const [filters, setFilters] = useState({ assetType: "All", condition: "All", finance: "All", insurance: "All", location: "", maxPrice: "" });
+  const [showFilters, setShowFilters] = useState(false);
+  const publicListings = listings.filter((listing) => {
+    const vehicle = vehicles.find((item) => item.id === listing.vehicleId);
+    const closing = saleClosings.find((item) => item.listingId === listing.id);
+    return listing.status !== "Sold" && vehicle?.status !== "Sold" && closing?.status !== "Sold";
+  });
+  const filteredListings = publicListings.filter((listing) => {
+    const vehicle = vehicles.find((item) => item.id === listing.vehicleId);
+    const vehicleLiability = vehicle ? liability(vehicle) : 0;
+    const locationMatch = !filters.location.trim() || String(listing.location || "").toLowerCase().includes(filters.location.trim().toLowerCase());
+    const priceMatch = !filters.maxPrice || Number(listing.price) <= Number(filters.maxPrice);
+    const assetMatch = filters.assetType === "All" || vehicle?.type === filters.assetType;
+    const conditionMatch = filters.condition === "All" || listing.condition === filters.condition;
+    const financeMatch = filters.finance === "All" || (filters.finance === "Financed" ? vehicleLiability > 0 : vehicleLiability <= 0);
+    const insuranceMatch = filters.insurance === "All" || (filters.insurance === "Insured" ? Boolean(vehicle?.insuranceExpiry) : !vehicle?.insuranceExpiry);
+    return locationMatch && priceMatch && assetMatch && conditionMatch && financeMatch && insuranceMatch;
+  });
+  const resetFilters = () => setFilters({ assetType: "All", condition: "All", finance: "All", insurance: "All", location: "", maxPrice: "" });
+  const activeFilterCount = Object.entries(filters).filter(([key, value]) => key === "location" || key === "maxPrice" ? Boolean(value) : value !== "All").length;
   return (
-    <section className="stack">
-      <div className="customer-section-header">
-        <h2>Marketplace</h2>
-        <span>{listings.length} listing{listings.length !== 1 ? "s" : ""}</span>
+    <section className="stack customer-marketplace-page">
+      <div className="customer-marketplace-hero">
+        <span className="customer-marketplace-hero-icon"><MarketplaceStoreIcon /></span>
+        <div className="customer-marketplace-hero-copy">
+          <span className="customer-marketplace-eyebrow">Vehicle marketplace</span>
+          <h2>Find your next vehicle</h2>
+          <p>Explore active listings and share your vehicle with verified buyers.</p>
+        </div>
+        <div className="customer-marketplace-hero-stat">
+          <strong>{listings.length}</strong>
+          <span>Active listings</span>
+        </div>
       </div>
-      <details className="customer-action-panel">
-        <summary><Icon name="plus" /> Sell a vehicle</summary>
+      <div className="customer-marketplace-toolbar">
+        <div>
+          <span className="customer-marketplace-toolbar-label">Marketplace</span>
+          <h2>Available listings</h2>
+        </div>
+        <div className="customer-marketplace-toolbar-actions">
+          <span className="customer-marketplace-count">{filteredListings.length} listing{filteredListings.length !== 1 ? "s" : ""}</span>
+          <button className="filter-trigger customer-filter-trigger" type="button" onClick={() => setShowFilters(true)}><Icon name="filter" />Filters{activeFilterCount ? ` (${activeFilterCount})` : ""}</button>
+          <details className="customer-action-panel customer-sell-panel">
+            <summary><Icon name="plus" /> Sell a vehicle</summary>
         <form className="form-grid compact-form" onSubmit={submitListing}>
           <label>Vehicle<select name="vehicleId" required defaultValue=""><option value="" disabled>Select your vehicle</option>{myVehicles.map((vehicle) => <option key={vehicle.id} value={vehicle.id}>{vehicle.regNo} | {vehicle.make} {vehicle.model}</option>)}</select></label>
           <label>Asking price<input name="price" type="number" min="1" step="0.01" placeholder="950000" required /></label>
@@ -3998,9 +4163,23 @@ function CustomerMarketplace({ listings, vehicles, saleClosings = [], myVehicles
           <button className="span-2" type="submit"><Icon name="store" />Submit sale listing</button>
         </form>
         {myVehicles.length === 0 && <Empty text="No vehicle is available for a sale listing." />}
-      </details>
-      <div className="grid-list">
-        {listings.map((l) => {
+          </details>
+        </div>
+      </div>
+      {showFilters && <button className="filter-drawer-backdrop" type="button" aria-label="Close filters" onClick={() => setShowFilters(false)} />}
+      <aside className={`filter-drawer customer-filter-drawer ${showFilters ? "open" : ""}`} aria-label="Marketplace filters">
+        <div className="filter-drawer-head"><div><p className="eyebrow">Refine results</p><h3>Marketplace filters</h3></div><button className="icon-button" type="button" aria-label="Close filters" onClick={() => setShowFilters(false)}><Icon name="close" /></button></div>
+        <label>Asset type<select value={filters.assetType} onChange={(event) => setFilters((current) => ({ ...current, assetType: event.target.value }))}><option>All</option><option>Truck</option><option>Trailer</option></select></label>
+        <label>Condition<select value={filters.condition} onChange={(event) => setFilters((current) => ({ ...current, condition: event.target.value }))}><option>All</option><option>Excellent</option><option>Good</option><option>Average</option></select></label>
+        <label>Finance<select value={filters.finance} onChange={(event) => setFilters((current) => ({ ...current, finance: event.target.value }))}><option>All</option><option>Financed</option><option>Loan-free</option></select></label>
+        <label>Insurance<select value={filters.insurance} onChange={(event) => setFilters((current) => ({ ...current, insurance: event.target.value }))}><option>All</option><option>Insured</option><option>Missing</option></select></label>
+        <label>Location<input value={filters.location} onChange={(event) => setFilters((current) => ({ ...current, location: event.target.value }))} placeholder="Search location" /></label>
+        <label>Max price<input type="number" min="0" value={filters.maxPrice} onChange={(event) => setFilters((current) => ({ ...current, maxPrice: event.target.value }))} placeholder="Any price" /></label>
+        <div className="filter-drawer-actions"><button className="filter-reset" type="button" onClick={resetFilters}><Icon name="refresh" />Reset</button><button type="button" onClick={() => setShowFilters(false)}>Apply filters</button></div>
+      </aside>
+      {chat.error && <p className="mc-error" role="alert">{chat.error}</p>}
+      <div className="customer-marketplace-listings">
+        {filteredListings.map((l) => {
           const v = vehicles.find((x) => x.id === l.vehicleId);
           const closing = saleClosings.find((item) => item.listingId === l.id);
           const listingPhoto = l.photos?.[0];
@@ -4022,12 +4201,35 @@ function CustomerMarketplace({ listings, vehicles, saleClosings = [], myVehicles
                 <div><dt>Estimated closing</dt><dd>{closing ? formatMoney(closing.estimatedAmount) : formatMoney(v ? liability(v) : 0)}</dd></div>
                 <div><dt>Bank-confirmed closing</dt><dd>{closing?.bankConfirmedAmount ? formatMoney(closing.bankConfirmedAmount) : "Pending bank confirmation"}</dd></div>
               </dl>
-              <div className="actions"><button type="button" onClick={() => setSelectedListing(l)}><Icon name="eye" />View details</button></div>
+              <div className="actions"><button type="button" onClick={() => setSelectedListing(l)}><Icon name="eye" />View details</button><ChatRequestButton chat={chat} listingId={l.id} mine={mine} openChats={() => setSection("chats")} /></div>
             </article>
           );
         })}
         {listings.length === 0 && (
-          <Empty text="No active marketplace listings yet." />
+          <section className="customer-marketplace-empty">
+            <span className="customer-marketplace-empty-icon"><MarketplaceStoreIcon /></span>
+            <div>
+              <h3>No active listings yet</h3>
+              <p>New vehicles approved for the marketplace will appear here.</p>
+            </div>
+            <button className="customer-marketplace-empty-action" type="button" onClick={() => setSection?.("fleet")}>
+              <Icon name="truck" />
+              View my fleet
+            </button>
+          </section>
+        )}
+        {listings.length > 0 && filteredListings.length === 0 && (
+          <section className="customer-marketplace-empty customer-marketplace-filter-empty">
+            <span className="customer-marketplace-empty-icon"><MarketplaceStoreIcon /></span>
+            <div>
+              <h3>No listings match these filters</h3>
+              <p>Try a different filter or reset the current search.</p>
+            </div>
+            <button className="customer-marketplace-empty-action" type="button" onClick={resetFilters}>
+              <Icon name="refresh" />
+              Reset filters
+            </button>
+          </section>
         )}
       </div>
       {selectedListing && <MarketplaceVehicleModal listing={selectedListing} vehicle={vehicles.find((vehicle) => vehicle.id === selectedListing.vehicleId)} closing={saleClosings.find((item) => item.listingId === selectedListing.id)} onClose={() => setSelectedListing(null)} />}
@@ -4035,84 +4237,7 @@ function CustomerMarketplace({ listings, vehicles, saleClosings = [], myVehicles
   );
 }
 
-function CustomerChats({ listings, vehicles, clients, threads, customerClientId, session, saveMessage, updateThreadStatus }) {
-  const [drafts, setDrafts] = useState({});
-  const [attachments, setAttachments] = useState({});
-  const visibleListings = listings.filter((listing) => ["Active", "Reserved"].includes(listing.status) || threads.some((thread) => thread.listingId === listing.id));
-  const threadCount = threads.filter((thread) => thread.buyerClientId === customerClientId || thread.sellerClientId === customerClientId).length;
 
-  return (
-    <section className="stack">
-      <div className="customer-section-header">
-        <h2>Marketplace Chats</h2>
-        <span>{threadCount} thread{threadCount !== 1 ? "s" : ""}</span>
-      </div>
-      <div className="grid-list">
-        {visibleListings.map((listing) => {
-          const vehicle = vehicles.find((item) => item.id === listing.vehicleId);
-          const seller = clients.find((item) => item.id === vehicle?.clientId);
-          const thread = threads.find((item) => item.listingId === listing.id && (item.buyerClientId === customerClientId || item.sellerClientId === customerClientId))
-            ?? threads.find((item) => item.listingId === listing.id);
-          const draft = drafts[listing.id] ?? "";
-          const attachment = attachments[listing.id] ?? null;
-          return (
-            <article className="asset chat-card" key={listing.id}>
-              <div className="card-head">
-                <div>
-                  <strong>{listing.title}</strong>
-                  <span>{vehicle?.regNo ?? listing.vehicleId} | {seller?.name ?? "Vehicle Owner"}</span>
-                </div>
-                <Badge label={thread?.status ?? "Interested"} />
-              </div>
-              <div className="chat-history">
-                {(thread?.messages ?? []).slice(-5).map((message) => (
-                  <div className={`chat-bubble ${message.senderId === session.id ? "mine" : ""}`} key={message.id}>
-                    <strong>{message.senderName}</strong>
-                    {message.text && <span>{message.text}</span>}
-                    {message.attachment?.dataUrl && <a className="chat-attachment" href={message.attachment.dataUrl} target="_blank" rel="noreferrer"><Icon name="upload" />Open {message.attachment.fileName}</a>}
-                    <small>{message.sentAt}</small>
-                  </div>
-                ))}
-                {!thread?.messages?.length && <Empty text="No messages yet." />}
-              </div>
-              <textarea
-                rows={2}
-                value={draft}
-                placeholder="Type your message"
-                onChange={(event) => setDrafts((current) => ({ ...current, [listing.id]: event.target.value }))}
-              />
-              <label className="chat-attachment-picker"><Icon name="upload" /><span>{attachment?.fileName || "Attach image or file"}</span><input type="file" accept="image/*,application/pdf" onChange={async (event) => {
-                const file = event.target.files?.[0];
-                if (!file) return;
-                if (file.size > 8 * 1024 * 1024) {
-                  setDrafts((current) => ({ ...current, [listing.id]: "Files must be smaller than 8 MB." }));
-                  return;
-                }
-                try {
-                  const dataUrl = await readFileAsDataUrl(file);
-                  setAttachments((current) => ({ ...current, [listing.id]: { fileName: file.name, mimeType: file.type || "application/octet-stream", size: file.size, dataUrl } }));
-                } catch (error) {
-                  setDrafts((current) => ({ ...current, [listing.id]: "Unable to read this file." }));
-                }
-              }} /></label>
-              <div className="actions">
-                <button type="button" onClick={() => {
-                  saveMessage(listing.id, draft, attachment);
-                  setDrafts((current) => ({ ...current, [listing.id]: "" }));
-                  setAttachments((current) => ({ ...current, [listing.id]: null }));
-                }}><Icon name="check" />Send</button>
-                <button type="button" onClick={() => updateThreadStatus(listing.id, "Reserved")}>Reserve</button>
-                <button type="button" onClick={() => updateThreadStatus(listing.id, "Reported")}>Report</button>
-                <button className="danger" type="button" onClick={() => updateThreadStatus(listing.id, "Blocked")}>Block</button>
-              </div>
-            </article>
-          );
-        })}
-        {visibleListings.length === 0 && <Empty text="No active chat-ready listings yet." />}
-      </div>
-    </section>
-  );
-}
 
 function Metric({ label, value, icon, onClick }) {
   const content = (
@@ -4166,7 +4291,65 @@ function Panel({ title, children }) {
 }
 
 function Pair({ label, value }) {
-  return <p className="pair"><span>{label}</span><b>{value}</b></p>;
+  return <p className="pair"><span>{label}</span><b>{displayPairValue(value)}</b></p>;
+}
+
+function displayPairValue(value) {
+  if (value === null || value === undefined || value === "") return "-";
+  if (typeof value === "object") return value.fileName || value.file_name || value.name || "File attached";
+  const text = String(value);
+  return ["[object File]", "[object Object]"].includes(text) ? "File attached" : text;
+}
+
+function ProofFileIcon() {
+  return (
+    <svg className="proof-file-svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeLinecap="round" strokeLinejoin="round" strokeWidth="1.8" aria-hidden="true">
+      <path d="M6 3.5h8l4 4V20a1.5 1.5 0 0 1-1.5 1.5h-11A1.5 1.5 0 0 1 4 20V5A1.5 1.5 0 0 1 5.5 3.5Z" />
+      <path d="M14 3.5V8h4" />
+      <path d="M7.5 12h5M7.5 15.5h7" />
+    </svg>
+  );
+}
+
+function KuberBrandMark() {
+  return (
+    <svg className="kuber-brand-svg" viewBox="0 0 48 48" fill="none" aria-hidden="true" focusable="false">
+      <g transform="translate(3 0)">
+        <path d="M13 9v30" stroke="#F0A500" strokeLinecap="round" strokeWidth="3.2" />
+        <path d="M21 9v30M21 24 36 9M21 24l15 15" stroke="currentColor" strokeLinecap="round" strokeLinejoin="round" strokeWidth="4.5" />
+        <circle cx="36" cy="9" r="2" fill="#F0A500" />
+      </g>
+    </svg>
+  );
+}
+
+function MarketplaceStoreIcon() {
+  return (
+    <svg className="marketplace-store-svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeLinecap="round" strokeLinejoin="round" strokeWidth="1.7" aria-hidden="true">
+      <path d="M4 10.5h16V20H4z" />
+      <path d="M3 10.5 5 4h14l2 6.5" />
+      <path d="M3 10.5c.4 1.4 1.4 2.2 2.8 2.2s2.4-.8 2.8-2.2c.4 1.4 1.4 2.2 2.8 2.2s2.4-.8 2.8-2.2c.4 1.4 1.4 2.2 2.8 2.2s2.4-.8 2.8-2.2" />
+      <path d="M8 20v-4h8v4" />
+    </svg>
+  );
+}
+
+function ChatBubbleIcon() {
+  return (
+    <svg className="chat-bubble-svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeLinecap="round" strokeLinejoin="round" strokeWidth="1.7" aria-hidden="true">
+      <path d="M5 5.5h14a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2H11l-4.5 3v-3H5a2 2 0 0 1-2-2v-8a2 2 0 0 1 2-2Z" />
+      <path d="M7.5 10h9M7.5 13.5h5.5" />
+    </svg>
+  );
+}
+
+function PaperclipIcon() {
+  return (
+    <svg className="paperclip-svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeLinecap="round" strokeLinejoin="round" strokeWidth="1.8" aria-hidden="true">
+      <path d="m8.5 12.5 5.9-5.9a3.25 3.25 0 0 1 4.6 4.6l-7.7 7.7a5 5 0 0 1-7.1-7.1l7.1-7.1" />
+      <path d="m9.4 14.6 6.1-6.1a1.5 1.5 0 0 1 2.1 2.1l-6.1 6.1a2.5 2.5 0 0 1-3.5-3.5l6.1-6.1" />
+    </svg>
+  );
 }
 
 function Empty({ text }) {
@@ -4187,11 +4370,68 @@ function AccessDenied({ role, section }) {
 
 function Badge({ label }) {
   const tone = String(label).toLowerCase().replace(/\s+/g, "-");
-  return <span className={`badge ${tone}`}>{label}</span>;
+  const toneClass = tone === "due" ? "status-due" : tone;
+  return <span className={`badge ${toneClass}`}>{label}</span>;
 }
 
+const iconPaths = {
+  home: <><path d="m3 11 9-8 9 8" /><path d="M5 10v10h14V10" /></>,
+  people: <><path d="M16 21v-2a4 4 0 0 0-4-4H6a4 4 0 0 0-4 4v2" /><circle cx="9" cy="7" r="4" /><path d="M22 21v-2a4 4 0 0 0-3-3.87M16 3.13a4 4 0 0 1 0 7.75" /></>,
+  truck: <><path d="M10 17h4V5H2v12h3" /><path d="M14 8h4l4 4v5h-3" /><circle cx="7.5" cy="17.5" r="2.5" /><circle cx="16.5" cy="17.5" r="2.5" /></>,
+  calendar: <><rect x="3" y="4" width="18" height="18" rx="2" /><path d="M16 2v4M8 2v4M3 10h18" /></>,
+  clock: <><circle cx="12" cy="12" r="9" /><path d="M12 7v5l3 2" /></>,
+  check: <path d="m5 12 4.2 4.2L19 6.5" />,
+  phone: <path d="M22 16.92v3a2 2 0 0 1-2.18 2A19.8 19.8 0 0 1 3.1 5.18 2 2 0 0 1 5.11 3h3a2 2 0 0 1 2 1.72c.12.9.33 1.77.62 2.61a2 2 0 0 1-.45 2.11L9 10.72a16 16 0 0 0 4.28 4.28l1.28-1.28a2 2 0 0 1 2.11-.45c.84.29 1.71.5 2.61.62A2 2 0 0 1 22 16.92z" />,
+  store: <><path d="M4 10v11h16V10" /><path d="M3 10h18L19 3H5z" /><path d="M9 21v-6h6v6" /></>,
+  chart: <><path d="M3 3v18h18" /><path d="M7 16V9M12 16V5M17 16v-3" /></>,
+  download: <><path d="M12 3v12" /><path d="m7 10 5 5 5-5" /><path d="M5 21h14" /></>,
+  upload: <><path d="M12 16V3" /><path d="m7 8 5-5 5 5" /><path d="M4 14v6h16v-6" /></>,
+  settings: <><circle cx="12" cy="12" r="3" /><path d="M19.4 15a1.7 1.7 0 0 0 .34 1.88l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06A1.7 1.7 0 0 0 15 19.4a1.7 1.7 0 0 0-1 .6 1.7 1.7 0 0 0-.4 1.1V21a2 2 0 1 1-4 0v-.09A1.7 1.7 0 0 0 8.6 19.4a1.7 1.7 0 0 0-1.88.34l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06A1.7 1.7 0 0 0 4.6 15a1.7 1.7 0 0 0-.6-1 1.7 1.7 0 0 0-1.1-.4H3a2 2 0 1 1 0-4h.09A1.7 1.7 0 0 0 4.6 8.6a1.7 1.7 0 0 0-.34-1.88l-.06-.06A2 2 0 1 1 7.03 3.83l.06.06A1.7 1.7 0 0 0 9 4.6a1.7 1.7 0 0 0 1-.6 1.7 1.7 0 0 0 .4-1.1V3a2 2 0 1 1 4 0v.09A1.7 1.7 0 0 0 15.4 4.6a1.7 1.7 0 0 0 1.88-.34l-.06-.06A2 2 0 1 1 20.11 7l-.06.06A1.7 1.7 0 0 0 19.4 9c.4.25.75.6 1 1 .28.45.68.7 1.1.7H21a2 2 0 1 1 0 4h-.09a1.7 1.7 0 0 0-1.51.9z" /></>,
+  cloud: <path d="M17.5 19H7a5 5 0 1 1 1.1-9.88A7 7 0 0 1 21 12.5 3.5 3.5 0 0 1 17.5 19z" />,
+  money: <><rect x="2" y="6" width="20" height="12" rx="2" /><circle cx="12" cy="12" r="2" /><path d="M6 12h.01M18 12h.01" /></>,
+  plus: <path d="M12 5v14M5 12h14" />,
+  bell: <><path d="M18 8a6 6 0 0 0-12 0c0 7-3 7-3 9h18c0-2-3-2-3-9" /><path d="M13.73 21a2 2 0 0 0-3.46 0" /></>,
+  eye: <><path d="M2 12s3.5-7 10-7 10 7 10 7-3.5 7-10 7S2 12 2 12z" /><circle cx="12" cy="12" r="3" /></>,
+  search: <><circle cx="11" cy="11" r="8" /><path d="m21 21-4.35-4.35" /></>,
+  trash: <><path d="M3 6h18M8 6V4h8v2M19 6l-1 14H6L5 6" /><path d="M10 11v6M14 11v6" /></>,
+  logout: <><path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4" /><path d="m16 17 5-5-5-5M21 12H9" /></>,
+  filter: <path d="M4 6h16M7 12h10M10 18h4" />,
+  close: <path d="m6 6 12 12M18 6 6 18" />,
+  refresh: <><path d="M20 11a8 8 0 0 0-14.7-3L3 11" /><path d="M3 4v7h7M4 13a8 8 0 0 0 14.7 3L21 13" /><path d="M21 20v-7h-7" /></>,
+  "chevron-down": <path d="m7 9 5 5 5-5" />,
+  "chevron-right": <path d="m9 6 6 6-6 6" />
+};
+
 function Icon({ name }) {
-  return <span className={`icon icon-${name}`} aria-hidden="true" />;
+  return (
+    <svg
+      className={`icon icon-${name}`}
+      viewBox="0 0 24 24"
+      fill="none"
+      stroke="currentColor"
+      strokeLinecap="round"
+      strokeLinejoin="round"
+      strokeWidth="1.8"
+      aria-hidden="true"
+      focusable="false"
+    >
+      {iconPaths[name] ?? iconPaths.settings}
+    </svg>
+  );
+}
+
+function AlertSvg({ name }) {
+  const common = { fill: "none", stroke: "currentColor", strokeLinecap: "round", strokeLinejoin: "round", strokeWidth: 1.8 };
+  if (name === "check") {
+    return <svg className="alert-svg" viewBox="0 0 24 24" aria-hidden="true" {...common}><path d="m5 12 4.2 4.2L19 6.5" /></svg>;
+  }
+  if (name === "bell") {
+    return <svg className="alert-svg" viewBox="0 0 24 24" aria-hidden="true" {...common}><path d="M18 8a6 6 0 0 0-12 0c0 6.5-2.5 7.5-2.5 9h17c0-1.5-2.5-2.5-2.5-9Z" /><path d="M10 21h4" /></svg>;
+  }
+  if (name === "money") {
+    return <svg className="alert-svg" viewBox="0 0 24 24" aria-hidden="true" {...common}><rect x="2.5" y="5.5" width="19" height="13" rx="2" /><circle cx="12" cy="12" r="2.4" /><path d="M6 9h.01M18 15h.01" /></svg>;
+  }
+  return <svg className="alert-svg" viewBox="0 0 24 24" aria-hidden="true" {...common}><rect x="3.5" y="5" width="17" height="16" rx="2" /><path d="M7.5 3v4M16.5 3v4M3.5 10h17" /></svg>;
 }
 
 function titleFor(section) {
@@ -4200,13 +4440,17 @@ function titleFor(section) {
 }
 
 function roleAccessName(role) {
+  return role || "Customer";
+}
+
+function permissionRoleName(role) {
   return role === "Customer" ? "Buyer" : (role || "Buyer");
 }
 
 function permissionValueFor(data, role, feature) {
   const rows = Array.isArray(data.rolePermissions) ? data.rolePermissions : permissionRows;
   const row = rows.find((item) => item[0] === feature);
-  const index = rolePermissionIndex[roleAccessName(role)] ?? rolePermissionIndex.Buyer;
+  const index = rolePermissionIndex[permissionRoleName(role)] ?? rolePermissionIndex.Buyer;
   return row?.[index] ?? "No";
 }
 
@@ -4246,6 +4490,11 @@ function formatPlainMoney(value) {
 function formatDisplayDate(value) {
   const text = String(value ?? "").trim();
   if (!text || text === "-") return "-";
+  const isoDateTimeMatch = text.match(/^(\d{4})-(\d{1,2})-(\d{1,2})(?:T|$)/);
+  if (isoDateTimeMatch) {
+    const [, year, month, day] = isoDateTimeMatch;
+    return `${day.padStart(2, "0")}-${month.padStart(2, "0")}-${year}`;
+  }
   const isoMatch = text.match(/^(\d{4})-(\d{1,2})-(\d{1,2})$/);
   if (isoMatch) {
     const [, year, month, day] = isoMatch;
@@ -4515,9 +4764,11 @@ function isValidAgreementValue(value) {
 
 function sanitizePdfRowForMerge(row) {
   const scheduleParsed = row.scheduleParsed === "yes";
-  const blockedWithoutSchedule = new Set(["loanAmount", "emiAmount", "tenure", "paidEmi", "interestRate", "emiStart", "emiEnd", "bankClosingPrincipal"]);
+  // EMI amount and dates are safe fallback inputs even when a bank's table layout is not recognized.
+  const blockedWithoutSchedule = new Set(["loanAmount", "tenure", "paidEmi", "interestRate", "bankClosingPrincipal"]);
   return Object.fromEntries(Object.entries(row).filter(([key, value]) => {
     if (!value) return false;
+    if (Array.isArray(value) && value.length === 0) return false;
     if (blockedWithoutSchedule.has(key) && !scheduleParsed) return false;
     return true;
   }));
@@ -4577,7 +4828,19 @@ function baseRegNo(value) {
 }
 
 function excelRowToVehicle(row, clientId, id) {
-  const loanPlan = buildLoanPlan(row);
+  const importedSchedule = Array.isArray(row.emiSchedule) ? row.emiSchedule.filter((entry) => entry?.dueDate && toNumber(entry.amount) > 0) : [];
+  const loanPlan = importedSchedule.length
+    ? {
+        schedule: importedSchedule,
+        history: importedSchedule.filter((entry) => entry.status === "Paid").map((entry) => ({
+          installment: Number(entry.installment),
+          amount: toNumber(entry.amount),
+          paidOn: entry.paidAt || entry.dueDate,
+          reference: entry.reference || `EMI-${String(entry.installment).padStart(3, "0")}`,
+          status: "Verified"
+        }))
+      }
+    : buildLoanPlan(row);
   const insuranceHistory = buildInsuranceHistoryEntry({
     insuranceCompany: row.policyCompany || "",
     insurancePolicyNo: row.policyNo || "",
@@ -4638,14 +4901,121 @@ function excelRowToVehicle(row, clientId, id) {
   };
 }
 
+function mergePdfIntoVehicle(vehicle, row) {
+  const next = { ...vehicle };
+  const textFields = [
+    ["loanId", "loanId"],
+    ["loanAccount", "loanAccount"],
+    ["financier", "financier"],
+    ["make", "manufacturer"],
+    ["model", "model"]
+  ];
+  textFields.forEach(([target, source]) => {
+    if (String(row[source] ?? "").trim()) next[target] = String(row[source]).trim();
+  });
+  if (row.regNo) next.regNo = baseRegNo(row.regNo);
+  [
+    ["loanAmount", "loanAmount"],
+    ["emiAmount", "emiAmount"],
+    ["interestRate", "interestRate"],
+    ["tenure", "tenure"],
+    ["paidEmi", "paidEmi"]
+  ].forEach(([target, source]) => {
+    if (toNumber(row[source]) > 0) next[target] = toNumber(row[source]);
+  });
+  [
+    ["emiStart", "emiStart"],
+    ["emiEnd", "emiEnd"],
+    ["insuranceCompany", "policyCompany"],
+    ["insurancePolicyNo", "policyNo"],
+    ["insuranceStart", "policyStart"],
+    ["insuranceExpiry", "policyEnd"],
+    ["permitNo", "permitNo"],
+    ["permitIssue", "permitIssue"],
+    ["permitExpiry", "permitExpired"],
+    ["permitType", "permitType"],
+    ["nationalPermitExpiry", "nationalPermitExpired"],
+    ["pucNo", "pucNo"],
+    ["pucExpiry", "pucExpired"],
+    ["fitnessExpiry", "fitnessExpired"]
+  ].forEach(([target, source]) => {
+    if (String(row[source] ?? "").trim() && String(row[source]).trim() !== "-") next[target] = String(row[source]).trim();
+  });
+  const schedule = Array.isArray(row.emiSchedule) ? row.emiSchedule.filter((entry) => entry?.dueDate && toNumber(entry.amount) > 0) : [];
+  if (schedule.length > 0) {
+    next.emiSchedule = schedule;
+    next.emiHistory = schedule.filter((entry) => entry.status === "Paid").map((entry) => ({
+      installment: Number(entry.installment),
+      amount: toNumber(entry.amount),
+      paidOn: entry.paidAt || entry.dueDate,
+      reference: entry.reference || `EMI-${String(entry.installment).padStart(3, "0")}`,
+      status: "Verified"
+    }));
+    next.emiStart = schedule[0].dueDate;
+    next.emiEnd = schedule[schedule.length - 1].dueDate;
+    next.emiAmount = toNumber(row.emiAmount) || toNumber(schedule[0].amount);
+    next.tenure = toNumber(row.tenure) || schedule.length;
+    next.paidEmi = toNumber(row.paidEmi) || schedule.filter((entry) => entry.status === "Paid").length;
+  }
+  const calculatedPrincipal = autoClosingPrincipal(row);
+  if (calculatedPrincipal > 0) next.principal = calculatedPrincipal;
+  if (toNumber(row.loanAmount) > 0) next.loanAmount = toNumber(row.loanAmount);
+  if (toNumber(row.bankClosingPrincipal) > 0) next.principal = toNumber(row.bankClosingPrincipal);
+  return next;
+}
+
+function scheduleDateToIso(value) {
+  const date = parseDisplayDate(value);
+  if (!date) return "";
+  return `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, "0")}-${String(date.getDate()).padStart(2, "0")}`;
+}
+
+function nextPdfScheduleEntry(schedule) {
+  const today = new Date();
+  today.setHours(0, 0, 0, 0);
+  return (Array.isArray(schedule) ? schedule : [])
+    .filter((entry) => entry?.dueDate && entry.status !== "Paid" && parseDisplayDate(entry.dueDate))
+    .map((entry) => ({ entry, date: parseDisplayDate(entry.dueDate) }))
+    .sort((left, right) => left.date.getTime() - right.date.getTime())
+    .find(({ date }) => date >= today)
+    || (Array.isArray(schedule) ? schedule
+      .filter((entry) => entry?.dueDate && entry.status !== "Paid" && parseDisplayDate(entry.dueDate))
+      .map((entry) => ({ entry, date: parseDisplayDate(entry.dueDate) }))
+      .sort((left, right) => right.date.getTime() - left.date.getTime())[0] : null);
+}
+
+function buildPdfEmiDueTask(row, clientId, vehicleId, callerId = "") {
+  const scheduleEntry = nextPdfScheduleEntry(row.emiSchedule)?.entry;
+  const dueDate = scheduleDateToIso(scheduleEntry?.dueDate || row.emiStart || row.emiEnd);
+  const amount = toNumber(scheduleEntry?.amount) || toNumber(row.emiAmount);
+  if (!dueDate || amount <= 0) return null;
+  const date = new Date(`${dueDate}T00:00:00`);
+  const today = new Date();
+  today.setHours(0, 0, 0, 0);
+  const days = Math.round((date.getTime() - today.getTime()) / 86400000);
+  return {
+    id: `d-pdf-${String(vehicleId).replace(/[^a-z0-9]/gi, "")}-${dueDate}`,
+    clientId,
+    vehicleId,
+    type: "EMI",
+    amount,
+    dueDate,
+    status: days < 0 ? "Overdue" : "Due",
+    callerId,
+    priority: days <= 7 ? "High" : days <= 15 ? "Medium" : "Low"
+  };
+}
+
 function excelRowToDueTask(row, clientId, vehicleId, id) {
+  const scheduleEntry = nextPdfScheduleEntry(row.emiSchedule)?.entry;
+  const dueDate = scheduleDateToIso(scheduleEntry?.dueDate || row.emiStart) || row.emiStart || new Date().toISOString().slice(0, 10);
   return {
     id,
     clientId,
     vehicleId,
     type: "EMI",
-    amount: toNumber(row.emiAmount),
-    dueDate: row.emiStart || new Date().toISOString().slice(0, 10),
+    amount: toNumber(scheduleEntry?.amount) || toNumber(row.emiAmount),
+    dueDate,
     status: "Due",
     callerId: "",
     priority: "Medium"
@@ -5020,6 +5390,7 @@ function parseBankPdfText(text) {
     emiEnd: tableValues.emiEnd || findPdfDate(text, ["EMI End Date", "Maturity Date", "Last EMI Date", "Last Instalment date", "Last Installment date"]),
     bankClosingPrincipal: preferScheduleAmounts ? tableValues.bankClosingPrincipal : tableValues.bankClosingPrincipal || findPdfAmount(text, ["Closing Principal", "Principal Outstanding", "Outstanding Principal", "Current POS", "POS", "Foreclosure Amount", "Foreclosure Value", "Closure Amount", "Amount to be paid", "Payable Amount"], { positive: true, min: 1000 }),
     scheduleParsed: scheduleValues.scheduleParsed ? "yes" : "",
+    emiSchedule: Array.isArray(tableValues.emiSchedule) ? tableValues.emiSchedule : [],
     remarks: "Imported from bank PDF"
   };
 }
@@ -5616,6 +5987,14 @@ function summarizeScheduleRows(rows, text) {
   const dateTenure = findTenureFromPdfDates(text);
   const tenure = declaredTenure || dateTenure || Math.max(payableRows.length || lastRow.installment, paidRows.length);
   const paidEmi = Math.min(paidRows.length, tenure);
+  const emiSchedule = sortedRows.map((row) => ({
+    installment: Number(row.installment),
+    dueDate: scheduleDateToIso(row.dueDate),
+    amount: toNumber(row.installmentAmount),
+    principal: toNumber(row.principalPaid),
+    interest: toNumber(row.interest),
+    status: isScheduleDuePaid(row.dueDate) ? "Paid" : "Due"
+  })).filter((row) => row.dueDate && row.amount > 0);
   return {
     scheduleParsed: "yes",
     loanAmount: sortedRows[0].openingPrincipal,
@@ -5625,7 +6004,8 @@ function summarizeScheduleRows(rows, text) {
     interestRate: paidRow?.rate || lastRow.rate || sortedRows.find((row) => row.rate)?.rate || "",
     emiStart: formatDisplayDate(sortedRows[0].dueDate),
     emiEnd: formatDisplayDate(lastRow.dueDate),
-    bankClosingPrincipal: closingPrincipal
+    bankClosingPrincipal: closingPrincipal,
+    emiSchedule
   };
 }
 
