@@ -1883,7 +1883,7 @@ function AdminApp({ session, onLogout }) {
         {toast && <button className="toast" onClick={() => setToast("")}>{toast}</button>}
 
         {section === "fleet" && <Fleet data={data} updateVehicleFinance={updateVehicleFinance} updateVehicleCompliance={updateVehicleCompliance} updateVehicleCombination={updateVehicleCombination} createListing={createListing} />}
-        {section === "dues" && <Dues data={data} updateTaskStatus={updateTaskStatus} assignCallerToTask={assignCallerToTask} />}
+        {section === "dues" && <Dues data={data} openClientProfile={openClientProfile} />}
         {section === "verification" && <Verification data={data} updateTaskStatus={updateTaskStatus} />}
         {section === "caller" && <CallerQueue data={data} saveCallerOutcome={saveCallerOutcome} openWhatsApp={openWhatsApp} updateWhatsAppStatus={updateWhatsAppStatus} />}
         {section === "marketplace" && <Marketplace data={data} updateListingStatus={updateListingStatus} saveSaleClosing={saveSaleClosing} openFleet={() => openSection("fleet")} />}
@@ -2485,20 +2485,27 @@ function Fleet({ data, updateVehicleFinance, updateVehicleCompliance, updateVehi
   );
 }
 
-function Dues({ data, updateTaskStatus, assignCallerToTask }) {
-  const callers = (data.users ?? []).filter((user) => user.role === "Caller");
+function Dues({ data, openClientProfile }) {
+  const [expiryFilter, setExpiryFilter] = useState("PUC");
   const smartAlerts = buildSmartAlerts(data);
-  const openTasks = data.dueTasks.filter((task) => task.status !== "Closed");
+  const allExpiryAlerts = buildSmartAlerts(data, true);
   const expiredAlerts = smartAlerts.filter((alert) => alert.status === "Expired");
   const soonAlerts = smartAlerts.filter((alert) => ["Today", "Soon"].includes(alert.status));
-  const totalDue = openTasks.reduce((sum, task) => sum + task.amount, 0);
+  const matchesExpiryFilter = (alert) => {
+    if (!expiryFilter) return true;
+    if (expiryFilter === "Expired") return alert.status === "Expired";
+    if (expiryFilter === "Soon") return ["Today", "Soon"].includes(alert.status);
+    return alert.type === expiryFilter;
+  };
+  const visibleSmartAlerts = smartAlerts.filter(matchesExpiryFilter);
+  const visibleExpiryAlerts = allExpiryAlerts.filter(matchesExpiryFilter);
 
   return (
     <section className="dues-board">
       <div className="dues-summary">
         <article className="dues-summary-card summary-alerts">
           <div className="dues-summary-icon"><AlertSvg name="calendar" /></div>
-          <div><span>Vehicle alerts</span><strong>{smartAlerts.length}</strong><small>Renewals to review</small></div>
+          <div><span>Vehicle documents</span><strong>{allExpiryAlerts.length}</strong><small>Expiry records tracked</small></div>
         </article>
         <article className="dues-summary-card summary-expired">
           <div className="dues-summary-icon"><AlertSvg name="bell" /></div>
@@ -2508,21 +2515,17 @@ function Dues({ data, updateTaskStatus, assignCallerToTask }) {
           <div className="dues-summary-icon"><AlertSvg name="calendar" /></div>
           <div><span>Next 10 days</span><strong>{soonAlerts.length}</strong><small>Upcoming renewals</small></div>
         </article>
-        <article className="dues-summary-card summary-payment">
-          <div className="dues-summary-icon"><AlertSvg name="money" /></div>
-          <div><span>Open payment</span><strong>{formatMoney(totalDue)}</strong><small>{openTasks.length} active due records</small></div>
-        </article>
       </div>
       <section className="smart-alert-panel">
         <div className="smart-alert-head">
           <div className="smart-alert-title">
             <div className="smart-alert-head-icon"><AlertSvg name="calendar" /></div>
-            <div><span className="smart-alert-kicker">Compliance watch</span><h2>Vehicle expiry details</h2></div>
+            <div><span className="smart-alert-kicker">Priority compliance watch</span><h2>Next 10 days expiry alerts</h2></div>
           </div>
-          <span className="smart-alert-count">{smartAlerts.length} alerts</span>
+          <span className="smart-alert-count">{visibleSmartAlerts.length} alerts</span>
         </div>
         <div className="smart-alert-list">
-          {smartAlerts.map((alert) => (
+          {visibleSmartAlerts.map((alert) => (
             <article className="smart-alert-card" key={alert.id}>
               <div className="smart-alert-icon"><AlertSvg name="calendar" /></div>
               <div className="smart-alert-copy">
@@ -2537,21 +2540,70 @@ function Dues({ data, updateTaskStatus, assignCallerToTask }) {
               <Badge label={alert.status} />
             </article>
           ))}
-          {smartAlerts.length === 0 && <div className="smart-alert-empty"><AlertSvg name="check" /><div><strong>Everything is up to date</strong><span>No vehicle expiry alerts found.</span></div></div>}
+          {visibleSmartAlerts.length === 0 && <div className="smart-alert-empty"><AlertSvg name="check" /><div><strong>No {expiryFilter || "priority"} alerts</strong><span>No matching vehicle expiry alerts found.</span></div></div>}
         </div>
       </section>
-      <section className="smart-alert-panel">
-        <div className="smart-alert-head">
-          <div className="smart-alert-title">
-            <div className="smart-alert-head-icon payment"><AlertSvg name="money" /></div>
-            <div><span className="smart-alert-kicker">Collection queue</span><h2>Payment alerts</h2></div>
+      <section className="expiry-nav-panel" aria-label="Expiry categories">
+        <div className="expiry-nav-heading">
+          <div>
+            <span className="smart-alert-kicker">Expiry navigator</span>
+            <h2>Expired &amp; upcoming documents</h2>
           </div>
-          <span className="smart-alert-count">{openTasks.length} open</span>
+          <span className="smart-alert-count">{allExpiryAlerts.length} records</span>
         </div>
-        <div className="dues-list">
-          {data.dueTasks.map((task) => (
-            <DueCard key={task.id} task={task} data={data} callers={callers} updateTaskStatus={updateTaskStatus} assignCallerToTask={assignCallerToTask} />
-          ))}
+        <nav className="expiry-nav-bar" aria-label="Filter expiry records">
+          {[
+            ["PUC", "PUC"],
+            ["Fitness", "Fitness"],
+            ["Permit", "Permit"],
+            ["National Permit", "National Permit"],
+            ["Policy", "Policy"]
+          ].map(([label, value]) => {
+            const count = value === "All"
+              ? allExpiryAlerts.length
+              : value === "Expired"
+                ? allExpiryAlerts.filter((alert) => alert.status === "Expired").length
+                : value === "Soon"
+                  ? allExpiryAlerts.filter((alert) => ["Today", "Soon"].includes(alert.status)).length
+                  : allExpiryAlerts.filter((alert) => alert.type === value).length;
+            return (
+              <button
+                type="button"
+                key={value}
+                className={expiryFilter === value ? "active" : ""}
+                aria-pressed={expiryFilter === value}
+                onClick={(event) => {
+                  event.stopPropagation();
+                  setExpiryFilter(value);
+                }}
+              >
+                <span>{label}</span><b>{count}</b>
+              </button>
+            );
+          })}
+        </nav>
+        <div className="expiry-nav-list">
+          {visibleExpiryAlerts.map((alert) => (
+              <article
+                className="expiry-nav-item clickable-expiry-item"
+                key={alert.id}
+                role="button"
+                tabIndex={0}
+                onClick={() => alert.clientId && openClientProfile(alert.clientId)}
+                onKeyDown={(event) => {
+                  if ((event.key === "Enter" || event.key === " ") && alert.clientId) {
+                    event.preventDefault();
+                    openClientProfile(alert.clientId);
+                  }
+                }}
+                title="Open customer profile"
+              >
+                <div><strong>{alert.type} {alert.status === "Expired" ? "Expired" : "Expiry"}</strong><span>{alert.vehicle} · {alert.client}</span></div>
+                <div><strong>{formatDisplayDate(alert.date)}</strong><span>{alert.detail}</span></div>
+                <Badge label={alert.status} />
+              </article>
+            ))}
+          {visibleExpiryAlerts.length === 0 && <div className="expiry-nav-empty">No expiry records found.</div>}
         </div>
       </section>
     </section>
@@ -4516,7 +4568,9 @@ function formatDisplayDate(value) {
   }
   const localMatch = text.match(/^(\d{1,2})[./-](\d{1,2})[./-](\d{2,4})$/);
   if (localMatch) {
-    const [, day, month, year] = localMatch;
+    let [, day, month, year] = localMatch;
+    // Accept both Indian DD-MM-YYYY and spreadsheet-style MM-DD-YYYY.
+    if (Number(day) <= 12 && Number(month) > 12) [day, month] = [month, day];
     return `${day.padStart(2, "0")}-${month.padStart(2, "0")}-${year.length === 2 ? `20${year}` : year}`;
   }
   const namedMonthMatch = text.match(/^(\d{1,2})[-\s]([A-Za-z]{3,})[-\s](\d{2,4})$/);
@@ -4536,7 +4590,10 @@ function parseDisplayDate(value) {
   if (!match) return null;
   const [, day, month, year] = match;
   const date = new Date(Number(year), Number(month) - 1, Number(day));
-  return Number.isNaN(date.getTime()) ? null : date;
+  if (Number.isNaN(date.getTime())) return null;
+  return date.getFullYear() === Number(year) &&
+    date.getMonth() === Number(month) - 1 &&
+    date.getDate() === Number(day) ? date : null;
 }
 
 function buildLoanPlan(fields) {
@@ -4658,7 +4715,7 @@ function smartAlertDetail(daysLeft) {
   return `${daysLeft} days left`;
 }
 
-function buildSmartAlerts(data) {
+function buildSmartAlerts(data, includeAll = false) {
   const today = new Date();
   today.setHours(0, 0, 0, 0);
   const alerts = [];
@@ -4669,11 +4726,14 @@ function buildSmartAlerts(data) {
     parsedDate.setHours(0, 0, 0, 0);
     const daysLeft = Math.round((parsedDate - today) / 86400000);
     const normalizedVehicle = baseRegNo(vehicle);
-    const id = `${normalizeRegNo(normalizedVehicle)}-${type}-${formatDisplayDate(date)}`;
+    const vehicleKey = normalizeRegNo(normalizedVehicle).replace(/[^A-Z0-9]/g, "");
+    const expiryKey = formatDisplayDate(date).replace(/[^0-9]/g, "");
+    const id = `${vehicleKey}-${type}-${expiryKey}`;
     if (seen.has(id)) return;
     seen.add(id);
     alerts.push({
       id,
+      clientId,
       client: clientName || getDataClient(data, clientId)?.name || "-",
       vehicle: normalizedVehicle || "-",
       type,
@@ -4688,22 +4748,34 @@ function buildSmartAlerts(data) {
     const clientName = getDataClient(data, vehicle.clientId)?.name;
     pushAlert({ clientId: vehicle.clientId, clientName, vehicle: vehicle.regNo, type: "Policy", date: vehicle.insuranceExpiry || vehicle.policyEnd });
     pushAlert({ clientId: vehicle.clientId, clientName, vehicle: vehicle.regNo, type: "Permit", date: vehicle.permitExpiry || vehicle.permitExpired });
-    pushAlert({ clientId: vehicle.clientId, clientName, vehicle: vehicle.regNo, type: "PUC", date: vehicle.pucExpired });
-    pushAlert({ clientId: vehicle.clientId, clientName, vehicle: vehicle.regNo, type: "Fitness", date: vehicle.fitnessExpired });
+    pushAlert({ clientId: vehicle.clientId, clientName, vehicle: vehicle.regNo, type: "National Permit", date: vehicle.nationalPermitExpiry || vehicle.nationalPermitExpired });
+    pushAlert({ clientId: vehicle.clientId, clientName, vehicle: vehicle.regNo, type: "PUC", date: vehicle.pucExpiry || vehicle.pucExpired });
+    pushAlert({ clientId: vehicle.clientId, clientName, vehicle: vehicle.regNo, type: "Fitness", date: vehicle.fitnessExpiry || vehicle.fitnessExpired });
+
+    (vehicle.insuranceHistory ?? []).forEach((entry) => {
+      pushAlert({ clientId: vehicle.clientId, clientName, vehicle: vehicle.regNo, type: "Policy", date: entry.expiryDate || entry.expiry });
+    });
+    (vehicle.complianceHistory ?? []).forEach((entry) => {
+      const type = entry.kind === "Road Tax" ? "National Permit" : entry.kind;
+      if (["Permit", "National Permit", "PUC", "Fitness"].includes(type)) {
+        pushAlert({ clientId: vehicle.clientId, clientName, vehicle: vehicle.regNo, type, date: entry.expiryDate || entry.expiry });
+      }
+    });
   });
 
   (data.clientImports ?? []).forEach((importItem) => {
     const clientName = getDataClient(data, importItem.clientId)?.name;
     (importItem.rows ?? []).filter((row) => row.regNo && !isBodyRow(row)).forEach((row) => {
-      pushAlert({ clientId: importItem.clientId, clientName, vehicle: row.regNo, type: "Policy", date: row.policyEnd });
-      pushAlert({ clientId: importItem.clientId, clientName, vehicle: row.regNo, type: "PUC", date: row.pucExpired });
-      pushAlert({ clientId: importItem.clientId, clientName, vehicle: row.regNo, type: "Fitness", date: row.fitnessExpired });
-      pushAlert({ clientId: importItem.clientId, clientName, vehicle: row.regNo, type: "Permit", date: row.permitExpired || row.nationalPermitExpired });
+      pushAlert({ clientId: importItem.clientId, clientName, vehicle: row.regNo, type: "Policy", date: row.policyEnd || row.policyExpiry || row.insuranceExpiry });
+      pushAlert({ clientId: importItem.clientId, clientName, vehicle: row.regNo, type: "PUC", date: row.pucExpired || row.pucExpiry });
+      pushAlert({ clientId: importItem.clientId, clientName, vehicle: row.regNo, type: "Fitness", date: row.fitnessExpired || row.fitnessExpiry });
+      pushAlert({ clientId: importItem.clientId, clientName, vehicle: row.regNo, type: "Permit", date: row.permitExpired || row.permitExpiry });
+      pushAlert({ clientId: importItem.clientId, clientName, vehicle: row.regNo, type: "National Permit", date: row.nationalPermitExpired || row.nationalPermitExpiry });
     });
   });
 
   return alerts
-    .filter((alert) => alert.daysLeft <= 10)
+    .filter((alert) => includeAll || alert.daysLeft <= 10)
     .sort((first, second) => first.daysLeft - second.daysLeft || first.vehicle.localeCompare(second.vehicle));
 }
 
