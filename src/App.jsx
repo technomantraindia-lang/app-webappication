@@ -700,14 +700,14 @@ function AdminApp({ session, onLogout }) {
 
   const totals = useMemo(() => {
     const activeVehicles = data.vehicles.filter((vehicle) => vehicle.status !== "Sold");
-    const totalLiability = activeVehicles.reduce((sum, vehicle) => sum + liability(vehicle), 0);
+    const totalLiability = activeVehicles.reduce((sum, vehicle) => sum + Number(vehicle.principal || 0), 0);
     const openDues = data.dueTasks.filter((task) => task.status !== "Closed");
     const overdue = data.dueTasks.filter((task) => ["Overdue", "Escalated"].includes(task.status));
     const proofPending = data.dueTasks.filter((task) => task.status === "Proof Pending");
     const pendingListings = data.listings.filter((listing) => listing.status === "Submitted");
     const trucks = activeVehicles.filter((vehicle) => vehicle.type === "Truck");
     const trailers = activeVehicles.filter((vehicle) => vehicle.type === "Trailer");
-    const financedAssets = activeVehicles.filter((vehicle) => liability(vehicle) > 0);
+    const financedAssets = activeVehicles.filter((vehicle) => Number(vehicle.principal || 0) > 0);
     const emiDue = openDues.filter((task) => task.type === "EMI");
     const emiOverdue = data.dueTasks.filter((task) => task.type === "EMI" && ["Overdue", "Escalated"].includes(task.status));
     const today = new Date();
@@ -1094,7 +1094,7 @@ function AdminApp({ session, onLogout }) {
         listingId,
         vehicleId: vehicle.id,
         clientId: vehicle.clientId,
-        estimatedAmount: combinedVehicles.reduce((sum, item) => sum + liability(item), 0),
+        estimatedAmount: combinedVehicles.reduce((sum, item) => sum + Number(item.principal || 0), 0),
         bankConfirmedAmount,
         foreclosureStatement: await readClosingFile("foreclosureStatement", existing?.foreclosureStatement),
         bankNoc: await readClosingFile("bankNoc", existing?.bankNoc),
@@ -1111,7 +1111,7 @@ function AdminApp({ session, onLogout }) {
         ...data,
         listings: data.listings.map((item) => item.id === listingId ? { ...item, status: record.status === "Sold" ? "Sold" : item.status } : item),
         vehicles: record.status === "Sold"
-          ? data.vehicles.map((item) => item.id === vehicle.id ? { ...item, status: "Sold" } : item)
+          ? data.vehicles.map((item) => item.id === vehicle.id ? { ...item, status: "Sold", soldDate } : item)
           : data.vehicles,
         dueTasks: record.status === "Sold"
           ? data.dueTasks.map((task) => task.vehicleId === vehicle.id ? { ...task, status: "Closed" } : task)
@@ -2485,6 +2485,7 @@ function Fleet({ data, updateVehicleFinance, updateVehicleCompliance, updateVehi
             <div><dt>Insurance</dt><dd>{vehicle.insurancePolicyNo || formatDisplayDate(vehicle.insuranceExpiry)}</dd></div>
             <div><dt>Permit</dt><dd>{vehicle.permitNo || formatDisplayDate(vehicle.permitExpiry)}</dd></div>
             <div><dt>Combination</dt><dd>{vehicle.combinationId || "Unlinked"}</dd></div>
+            {vehicle.status === "Sold" && <div><dt>Sold date</dt><dd>{formatDisplayDate(vehicle.soldDate)}</dd></div>}
           </dl>
           <details>
             <summary>Edit finance</summary>
@@ -3673,7 +3674,7 @@ function CustomerPortal({ session, onLogout }) {
   );
 
   const totalLiability = useMemo(
-    () => activeVehicles.reduce((sum, v) => sum + liability(v), 0),
+    () => activeVehicles.reduce((sum, v) => sum + Number(v.principal || 0), 0),
     [activeVehicles]
   );
 
@@ -3960,7 +3961,7 @@ function CustomerDashboard({ client, vehicles, dues, openDues, totalLiability, s
               <div className="customer-vehicle-status">
                 <Badge label={v.status} />
               </div>
-              <div className="customer-vehicle-amount">{formatMoney(liability(v))}</div>
+              <div className="customer-vehicle-amount">{formatMoney(v.principal)}</div>
             </article>
           ))}
           {vehicles.length === 0 && <Empty text="No vehicles found for your account." />}
