@@ -110,15 +110,16 @@
 .customer-fleet-summary {
   display: grid;
   gap: 12px;
-  grid-template-columns: repeat(3, minmax(0, 1fr));
+  grid-template-columns: repeat(4, minmax(0, 1fr));
 }
 
 .customer-fleet-summary > div {
-  background: #0F2240;
-  border: 1px solid #2A476F;
+  background: linear-gradient(145deg, #142D51 0%, #0F2240 100%);
+  border: 1px solid #2F5684;
   border-radius: 16px;
   box-shadow: 0 14px 30px rgba(2,10,22,0.35);
-  padding: 16px 18px;
+  min-height: 82px;
+  padding: 14px 18px;
 }
 
 .customer-fleet-summary span,
@@ -151,6 +152,52 @@
   display: grid;
   gap: 16px;
   padding: 20px;
+}
+
+.customer-sold-vehicles {
+  background: linear-gradient(145deg, rgba(18,43,77,.72), rgba(8,20,38,.82));
+  border: 1px solid #2A476F;
+  border-radius: 18px;
+  display: grid;
+  gap: 14px;
+  padding: 18px;
+}
+
+.customer-fleet-section-head {
+  align-items: end;
+  display: flex;
+  justify-content: space-between;
+}
+
+.customer-fleet-section-head span {
+  color: #8FA7C9;
+  font-size: 11px;
+  font-weight: 800;
+  letter-spacing: .08em;
+  text-transform: uppercase;
+}
+
+.customer-fleet-section-head h2 {
+  color: #F5F8FD;
+  font-size: 22px;
+  margin: 3px 0 0;
+}
+
+.customer-sold-vehicles .customer-fleet-grid {
+  grid-template-columns: repeat(2, minmax(260px, 1fr));
+}
+
+.customer-fleet-section-head > strong {
+  background: #422B1A;
+  border: 1px solid #F0A500;
+  border-radius: 999px;
+  color: #F0A500;
+  font-size: 12px;
+  padding: 8px 12px;
+}
+
+.customer-sold-card {
+  border-color: #80652A;
 }
 
 .customer-fleet-card-head {
@@ -295,6 +342,10 @@
 }
 
 @media (max-width: 1180px) {
+  .customer-fleet-summary {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
   .customer-fleet-grid {
     grid-template-columns: repeat(2, minmax(260px, 1fr));
   }
@@ -302,8 +353,15 @@
 
 @media (max-width: 760px) {
   .customer-fleet-summary,
-  .customer-fleet-grid {
+  .customer-fleet-grid,
+  .customer-sold-vehicles .customer-fleet-grid {
     grid-template-columns: 1fr;
+  }
+
+  .customer-fleet-section-head {
+    align-items: flex-start;
+    flex-direction: column;
+    gap: 10px;
   }
 }
 
@@ -6505,6 +6563,85 @@ textarea {
 .dues-summary-card.summary-alerts .dues-summary-icon {
   background: rgba(240, 165, 0, 0.14);
   border-color: rgba(240, 165, 0, 0.48);
+}
+
+.manual-body-finance-heading {
+  align-items: center;
+  display: flex;
+  grid-column: 1 / -1;
+  gap: 16px;
+  justify-content: space-between;
+  width: 100%;
+}
+
+.manual-body-finance-heading h3 {
+  color: #FFD166;
+  margin-bottom: 0;
+}
+
+.manual-body-finance-section {
+  background: linear-gradient(135deg, #122F54 0%, #102744 58%, #0D1D36 100%) !important;
+  border-color: rgba(86, 185, 168, 0.48) !important;
+  border-left: 3px solid #56B9A8 !important;
+  box-shadow: 0 14px 28px rgba(2, 10, 22, 0.28), inset 0 1px 0 rgba(255,255,255,0.04) !important;
+}
+
+.manual-body-finance-section h3::before {
+  background: linear-gradient(145deg, #1E5D75, #17405F);
+  border-color: rgba(115, 212, 193, 0.55);
+}
+
+.body-finance-toggle {
+  align-items: center;
+  background: #0B1A31;
+  border: 1px solid #2A476F;
+  border-radius: 10px;
+  display: inline-flex;
+  gap: 4px;
+  padding: 4px;
+}
+
+.body-finance-toggle span {
+  color: #AFC2DA;
+  font-size: 11px;
+  font-weight: 850;
+  margin: 0 5px 0 7px;
+}
+
+.body-finance-toggle button {
+  background: transparent;
+  border: 0;
+  border-radius: 7px;
+  color: #AFC2DA;
+  font-size: 11px;
+  font-weight: 900;
+  min-height: 30px;
+  min-width: 42px;
+  padding: 6px 10px;
+}
+
+.body-finance-toggle button.active {
+  background: #F0A500;
+  color: #081426;
+}
+
+.body-finance-fields {
+  display: grid;
+  gap: inherit;
+  grid-column: 1 / -1;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  margin-top: 14px;
+}
+
+@media (max-width: 760px) {
+  .manual-body-finance-heading {
+    align-items: flex-start;
+    flex-direction: column;
+  }
+
+  .body-finance-fields {
+    grid-template-columns: 1fr;
+  }
 }
 
 .smart-alert-panel:first-of-type {

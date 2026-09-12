@@ -70,7 +70,6 @@ function LoginPage({ onLogin }) {
 
   const isAdmin = role === "admin";
   const isCaller = role === "caller";
-  const roleLabels = { admin: "Admin", caller: "Caller", customer: "Customer" };
 
   const handleSubmit = async (event) => {
     event.preventDefault();
@@ -92,9 +91,9 @@ function LoginPage({ onLogin }) {
         : accountRole.toLowerCase() === "caller"
           ? "caller"
           : "customer";
-      if (accountKey !== role) {
-        throw new Error("This is a " + accountRole + " account. Switch to the " + roleLabels[accountKey] + " option.");
-      }
+      // The authenticated backend role is authoritative. Keep the selector in
+      // sync so a customer/caller account cannot remain highlighted as Admin.
+      if (accountKey !== role) setRole(accountKey);
       const kind = accountKey === "admin" ? "admin" : accountKey === "caller" ? "caller" : "customer";
       onLogin({ ...data, kind });
     } catch (err) {
@@ -455,7 +454,7 @@ async function fetchBackendData(token) {
       model: row.model ?? "",
       year: Number(row.year ?? 0),
       km: Number(row.km ?? 0),
-      principal: Number(row.principal ?? 0),
+      principal: Number(row.closing_principal ?? row.closingPrincipal ?? row.principal ?? 0),
       overdue: Number(row.overdue ?? 0),
       penalty: Number(row.penalty ?? 0),
       foreclosure: Number(row.foreclosure ?? 0),
@@ -486,7 +485,8 @@ async function fetchBackendData(token) {
       combinationId: row.combination_id ?? row.combinationId ?? "",
       insuranceExpiry: row.insurance_expiry ?? row.insuranceExpiry ?? "",
       permitExpiry: row.permit_expiry ?? row.permitExpiry ?? "",
-      status: row.status ?? "Active"
+      status: row.status ?? "Active",
+      soldDate: row.sold_date ?? row.soldDate ?? ""
     })) : [],
     dueTasks: Array.isArray(rawDues) ? rawDues.map((row) => ({
       id: row.id,
@@ -699,14 +699,15 @@ function AdminApp({ session, onLogout }) {
   );
 
   const totals = useMemo(() => {
-    const totalLiability = data.vehicles.reduce((sum, vehicle) => sum + liability(vehicle), 0);
+    const activeVehicles = data.vehicles.filter((vehicle) => vehicle.status !== "Sold");
+    const totalLiability = activeVehicles.reduce((sum, vehicle) => sum + liability(vehicle), 0);
     const openDues = data.dueTasks.filter((task) => task.status !== "Closed");
     const overdue = data.dueTasks.filter((task) => ["Overdue", "Escalated"].includes(task.status));
     const proofPending = data.dueTasks.filter((task) => task.status === "Proof Pending");
     const pendingListings = data.listings.filter((listing) => listing.status === "Submitted");
-    const trucks = data.vehicles.filter((vehicle) => vehicle.type === "Truck");
-    const trailers = data.vehicles.filter((vehicle) => vehicle.type === "Trailer");
-    const financedAssets = data.vehicles.filter((vehicle) => liability(vehicle) > 0);
+    const trucks = activeVehicles.filter((vehicle) => vehicle.type === "Truck");
+    const trailers = activeVehicles.filter((vehicle) => vehicle.type === "Trailer");
+    const financedAssets = activeVehicles.filter((vehicle) => liability(vehicle) > 0);
     const emiDue = openDues.filter((task) => task.type === "EMI");
     const emiOverdue = data.dueTasks.filter((task) => task.type === "EMI" && ["Overdue", "Escalated"].includes(task.status));
     const today = new Date();
@@ -756,6 +757,31 @@ function AdminApp({ session, onLogout }) {
         setToast(err.message || "Database load failed");
       });
   }, []);
+
+  // Keep an already-open Admin console in sync with customer actions (for
+  // example, a vehicle being marked Sold from the mobile app).
+  useEffect(() => {
+    let active = true;
+    const refreshFromDatabase = async () => {
+      if (document.visibilityState === "hidden") return;
+      try {
+        const latest = await fetchBackendData(session.token);
+        if (active) {
+          setData(latest);
+          setSaveStatus("Database");
+        }
+      } catch (error) {
+        // Keep the current screen usable when the network is temporarily unavailable.
+      }
+    };
+    const intervalId = window.setInterval(refreshFromDatabase, 10000);
+    window.addEventListener("focus", refreshFromDatabase);
+    return () => {
+      active = false;
+      window.clearInterval(intervalId);
+      window.removeEventListener("focus", refreshFromDatabase);
+    };
+  }, [session.token]);
 
   const persist = (nextData, message = "Saved") => {
     setData(nextData);
@@ -1512,20 +1538,42 @@ function AdminApp({ session, onLogout }) {
   const addManualClientVehicle = (event, clientId) => {
     event.preventDefault();
     const form = new FormData(event.currentTarget);
-    const row = mapManualVehicleForm(form);
+    const row = {
+      ...mapManualVehicleForm(form),
+      srNo: String(data.vehicles.filter((vehicle) => vehicle.clientId === clientId).length + 1)
+    };
     if (!row.regNo) {
       setSaveStatus("Error");
       setToast("Regt. No. required hai");
       return;
     }
-    const calculatedClosingPrincipal = autoClosingPrincipal(row);
     const manualRow = {
       ...row,
-      closingPrincipal: calculatedClosingPrincipal > 0 ? String(Math.round(calculatedClosingPrincipal)) : ""
+      // Manual Entry must keep the amount entered by the user.
+      bankClosingPrincipal: row.closingPrincipal || ""
     };
+    const bodyRow = row.bodyFinanceStatus || row.bodyFinancier || row.bodyLoanAccount || row.bodyLoanAmount || row.bodyEmiAmount
+      ? {
+          ...row,
+          regNo: `${row.regNo} BODY`,
+          financeStatus: row.bodyFinanceStatus,
+          financier: row.bodyFinancier,
+          loanAccount: row.bodyLoanAccount,
+          loanAmount: row.bodyLoanAmount,
+          emiAmount: row.bodyEmiAmount,
+          interestRate: row.bodyInterestRate,
+          tenure: row.bodyTenure,
+          paidEmi: row.bodyPaidEmi,
+          emiStart: row.bodyEmiStart,
+          emiEnd: row.bodyEmiEnd,
+          closingPrincipal: row.bodyClosingPrincipal || "",
+          bankClosingPrincipal: row.bodyClosingPrincipal || ""
+        }
+      : null;
     const client = getDataClient(data, clientId);
     const importStamp = Date.now();
     const vehicle = excelRowToVehicle(manualRow, clientId, `v-manual-${importStamp}`);
+    if (row.closingPrincipal) vehicle.principal = toNumber(row.closingPrincipal);
     const dueTask = toNumber(manualRow.emiAmount) > 0
       ? excelRowToDueTask(manualRow, clientId, vehicle.id, `d-manual-${importStamp}`)
       : null;
@@ -1534,7 +1582,7 @@ function AdminApp({ session, onLogout }) {
       clientId,
       fileName: "Manual Entry",
       importedAt: new Date().toLocaleString("en-IN"),
-      rows: [manualRow]
+      rows: bodyRow ? [manualRow, bodyRow] : [manualRow]
     };
     const updated = {
       ...data,
@@ -2038,11 +2086,12 @@ function Clients({ data, addClient, openClientProfile, deleteClientAndAccount })
 }
 
 function ManualVehicleForm({ client, onSubmit }) {
+  const [hasBodyFinance, setHasBodyFinance] = useState(false);
+
   return (
     <form className="manual-entry-form" onSubmit={onSubmit}>
       <section>
         <h3>Registration</h3>
-        <label>Sr. No.<input name="srNo" placeholder="1" /></label>
         <label>Regt. No.<input name="regNo" placeholder="GJ 16 AY 7703" required /></label>
         <label>Regt. Owner<input name="owner" defaultValue={client.name.toUpperCase()} /></label>
         <label>Manufacturer<input name="manufacturer" placeholder="AL" /></label>
@@ -2063,10 +2112,33 @@ function ManualVehicleForm({ client, onSubmit }) {
         <label>Paid Emi<input name="paidEmi" placeholder="7" /></label>
         <label>EMI Start<input name="emiStart" placeholder="01-05-2026" /></label>
         <label>EMI End<input name="emiEnd" placeholder="05-12-2029" /></label>
-        <div className="manual-auto-field">
-          <span>Closing Principal</span>
-          <strong>Auto calculated</strong>
+        <label>Closing Principal<input name="closingPrincipal" placeholder="Enter closing principal" /></label>
+      </section>
+      <section className="manual-body-finance-section">
+        <div className="manual-body-finance-heading">
+          <h3>Body Loan Details</h3>
+          <div className="body-finance-toggle" role="group" aria-label="Body finance available">
+            <span>Available?</span>
+            <button type="button" className={!hasBodyFinance ? "active" : ""} onClick={() => setHasBodyFinance(false)} aria-pressed={!hasBodyFinance}>No</button>
+            <button type="button" className={hasBodyFinance ? "active" : ""} onClick={() => setHasBodyFinance(true)} aria-pressed={hasBodyFinance}>Yes</button>
+          </div>
         </div>
+        {hasBodyFinance && (
+          <div className="body-finance-fields">
+            <label>Regt. No.<input name="bodyRegNo" defaultValue="BODY" /></label>
+            <label>Free/Fin Fin<input name="bodyFinanceStatus" placeholder="FIN" /></label>
+            <label>Financier's Name<input name="bodyFinancier" placeholder="AXIS" /></label>
+            <label>Loan Acc. No<input name="bodyLoanAccount" placeholder="BODY-LOAN-001" /></label>
+            <label>Loan Am.<input name="bodyLoanAmount" placeholder="500000" /></label>
+            <label>EMI Am.<input name="bodyEmiAmount" placeholder="15000" /></label>
+            <label>Interest Rate<input name="bodyInterestRate" placeholder="9.41" /></label>
+            <label>Tenure<input name="bodyTenure" placeholder="36" /></label>
+            <label>Paid Emi<input name="bodyPaidEmi" placeholder="0" /></label>
+            <label>EMI Start<input name="bodyEmiStart" placeholder="01-05-2026" /></label>
+            <label>EMI End<input name="bodyEmiEnd" placeholder="01-04-2029" /></label>
+            <label>Closing Principal<input name="bodyClosingPrincipal" placeholder="Enter body closing principal" /></label>
+          </div>
+        )}
       </section>
       <section>
         <h3>Policy</h3>
@@ -2085,7 +2157,6 @@ function ManualVehicleForm({ client, onSubmit }) {
         <label>Permit Expired<input name="permitExpired" placeholder="24-02-2031" /></label>
         <label>Permit Type<input name="permitType" placeholder="Goods Permit [HGV]" /></label>
         <label>National Permit Expired<input name="nationalPermitExpired" placeholder="20-05-2027" /></label>
-        <label className="span-2">Remarks<textarea name="remarks" placeholder="Notes" /></label>
       </section>
       <button type="submit"><Icon name="check" />Save Manual Details</button>
     </form>
@@ -2106,9 +2177,10 @@ function ClientProfile({ data, clientId, backToClients, importClientExcel, impor
   }
 
   const clientVehicles = data.vehicles.filter((vehicle) => vehicle.clientId === client.id);
-  const visibleVehicles = clientVehicles.filter((vehicle) => !isBodyRegNo(vehicle.regNo));
+  // Manual entries are real vehicles even when their registration text contains "body".
+  const visibleVehicles = clientVehicles;
   const clientDues = data.dueTasks.filter((task) => task.clientId === client.id);
-  const visibleDues = clientDues.filter((task) => !isBodyRegNo(getDataVehicle(data, task.vehicleId)?.regNo ?? task.type));
+  const visibleDues = clientDues;
   const clientImports = (data.clientImports ?? []).filter((item) => item.clientId === client.id);
   const importedAssets = clientImports.flatMap((item) => item.rows.map((row) => ({ ...row, importFile: item.fileName, importedAt: item.importedAt })));
   const validationRows = importedAssets.filter((row) => Array.isArray(row.validationIssues));
@@ -2409,7 +2481,7 @@ function Fleet({ data, updateVehicleFinance, updateVehicleCompliance, updateVehi
             <div><dt>Owner</dt><dd>{getDataClient(data, vehicle.clientId)?.name}</dd></div>
             <div><dt>Type</dt><dd>{vehicle.type}</dd></div>
             <div><dt>KM</dt><dd>{vehicle.km.toLocaleString("en-IN")}</dd></div>
-            <div><dt>Closing</dt><dd>{formatMoney(liability(vehicle))}</dd></div>
+            <div><dt>Closing Principal</dt><dd>{formatMoney(vehicle.principal)}</dd></div>
             <div><dt>Insurance</dt><dd>{vehicle.insurancePolicyNo || formatDisplayDate(vehicle.insuranceExpiry)}</dd></div>
             <div><dt>Permit</dt><dd>{vehicle.permitNo || formatDisplayDate(vehicle.permitExpiry)}</dd></div>
             <div><dt>Combination</dt><dd>{vehicle.combinationId || "Unlinked"}</dd></div>
@@ -2822,7 +2894,7 @@ function VehicleDetailModal({ row, onClose }) {
             ["Closing Principal", formatAutoClosingPrincipal(row)]
           ]} />
           {row.bodyDetail && (
-            <DetailSection title="Body Finance" rows={[
+            <DetailSection title="Body Loan Details" rows={[
               ["Regt. No.", "BODY"],
               ["Free/Fin Fin", row.bodyDetail.financeStatus],
               ["Financier's Name", row.bodyDetail.financier],
@@ -2851,8 +2923,7 @@ function VehicleDetailModal({ row, onClose }) {
             ["Permit Issue", formatDisplayDate(row.permitIssue)],
             ["Permit Expired", formatDisplayDate(row.permitExpired)],
             ["Permit Type", row.permitType],
-            ["National Permit Expired", formatDisplayDate(row.nationalPermitExpired)],
-            ["Remarks", row.remarks]
+            ["National Permit Expired", formatDisplayDate(row.nationalPermitExpired)]
           ]} />
         </div>
         <div className="loan-ledger-grid">
@@ -3530,7 +3601,7 @@ function CustomerPortal({ session, onLogout }) {
 
   useEffect(() => {
     let active = true;
-    fetchBackendData(session.token)
+    const refreshFromDatabase = () => fetchBackendData(session.token)
       .then((backendData) => {
         if (!active) return;
         setData(backendData);
@@ -3545,8 +3616,14 @@ function CustomerPortal({ session, onLogout }) {
         }
         setLoadError(error.message || "Customer data could not be loaded from the server.");
       });
+    refreshFromDatabase();
+    const intervalId = window.setInterval(refreshFromDatabase, 10000);
+    const handleFocus = () => refreshFromDatabase();
+    window.addEventListener("focus", handleFocus);
     return () => {
       active = false;
+      window.clearInterval(intervalId);
+      window.removeEventListener("focus", handleFocus);
     };
   }, []);
 
@@ -3559,6 +3636,14 @@ function CustomerPortal({ session, onLogout }) {
   const myVehicles = useMemo(
     () => data.vehicles.filter((v) => v.clientId === customerClientId),
     [data, customerClientId]
+  );
+  const activeVehicles = useMemo(
+    () => myVehicles.filter((vehicle) => vehicle.status !== "Sold"),
+    [myVehicles]
+  );
+  const soldVehicles = useMemo(
+    () => myVehicles.filter((vehicle) => vehicle.status === "Sold"),
+    [myVehicles]
   );
   const myDues = useMemo(
     () => {
@@ -3588,8 +3673,8 @@ function CustomerPortal({ session, onLogout }) {
   );
 
   const totalLiability = useMemo(
-    () => myVehicles.reduce((sum, v) => sum + liability(v), 0),
-    [myVehicles]
+    () => activeVehicles.reduce((sum, v) => sum + liability(v), 0),
+    [activeVehicles]
   );
 
   const openDues = myDues.filter((t) => t.status !== "Closed");
@@ -3795,7 +3880,7 @@ function CustomerPortal({ session, onLogout }) {
         {sectionAllowed && section === "dashboard" && (
           <CustomerDashboard
             client={myClient}
-            vehicles={myVehicles}
+            vehicles={activeVehicles}
             dues={myDues}
             openDues={openDues}
             totalLiability={totalLiability}
@@ -3803,7 +3888,7 @@ function CustomerPortal({ session, onLogout }) {
           />
         )}
         {sectionAllowed && section === "fleet" && (
-          <CustomerFleet vehicles={myVehicles} client={myClient} importedAssets={myImportedAssets} />
+          <CustomerFleet vehicles={activeVehicles} soldVehicles={soldVehicles} saleClosings={data.saleClosings} client={myClient} importedAssets={myImportedAssets} />
         )}
         {sectionAllowed && section === "dues" && (
           <CustomerDues dues={myDues} vehicles={myVehicles} submitCustomerProof={submitCustomerProof} />
@@ -3914,7 +3999,7 @@ function CustomerDashboard({ client, vehicles, dues, openDues, totalLiability, s
   );
 }
 
-function CustomerFleet({ vehicles, client, importedAssets = [] }) {
+function CustomerFleet({ vehicles, soldVehicles = [], saleClosings = [], client, importedAssets = [] }) {
   const bodyByReg = useMemo(() => {
     const pairs = new Map();
     importedAssets
@@ -3925,7 +4010,6 @@ function CustomerFleet({ vehicles, client, importedAssets = [] }) {
       });
     return pairs;
   }, [importedAssets]);
-
   return (
     <section className="customer-fleet-page">
       <div className="customer-fleet-summary">
@@ -3936,6 +4020,10 @@ function CustomerFleet({ vehicles, client, importedAssets = [] }) {
         <div>
           <span>Total vehicles</span>
           <strong>{vehicles.length}</strong>
+        </div>
+        <div>
+          <span>Sold vehicles</span>
+          <strong>{soldVehicles.length}</strong>
         </div>
         <div>
           <span>Body records</span>
@@ -3955,7 +4043,7 @@ function CustomerFleet({ vehicles, client, importedAssets = [] }) {
             <dl className="customer-fleet-details">
               <div><dt>Type</dt><dd>{v.type}</dd></div>
               <div><dt>KM</dt><dd>{v.km.toLocaleString("en-IN")}</dd></div>
-              <div><dt>Closing</dt><dd>{formatMoney(liability(v))}</dd></div>
+              <div><dt>Finance Closing Principal</dt><dd>{formatMoney(v.principal)}</dd></div>
               <div><dt>Insurance</dt><dd>{formatDisplayDate(v.insuranceExpiry)}</dd></div>
               <div><dt>Permit</dt><dd>{formatDisplayDate(v.permitExpiry)}</dd></div>
               <div><dt>Combination</dt><dd>{v.combinationId || "Unlinked"}</dd></div>
@@ -3977,10 +4065,41 @@ function CustomerFleet({ vehicles, client, importedAssets = [] }) {
             )}
           </article>
         ))}
-        {vehicles.length === 0 && (
+        {vehicles.length === 0 && soldVehicles.length === 0 && (
           <Empty text="No vehicles found for your account." />
         )}
       </div>
+      {soldVehicles.length > 0 && (
+        <section className="customer-sold-vehicles">
+          <div className="customer-fleet-section-head">
+            <div><span>Vehicle archive</span><h2>Sold vehicles</h2></div>
+            <strong>{soldVehicles.length} archived</strong>
+          </div>
+          <div className="customer-fleet-grid">
+            {soldVehicles.map((vehicle) => {
+              const closing = saleClosings.find((item) => item.vehicleId === vehicle.id);
+              return (
+                <article className="customer-fleet-card customer-sold-card" key={`sold-${vehicle.id}`}>
+                  <div className="customer-fleet-card-head">
+                    <div>
+                      <strong>{vehicle.regNo}</strong>
+                      <span>{vehicle.year} {vehicle.make} {vehicle.model}</span>
+                    </div>
+                    <Badge label="Sold" />
+                  </div>
+                  <dl className="customer-fleet-details">
+                    <div><dt>Finance Closing Principal</dt><dd>{formatMoney(vehicle.principal)}</dd></div>
+                    <div><dt>Sold date</dt><dd>{formatDisplayDate(vehicle.soldDate || closing?.soldDate)}</dd></div>
+                    <div><dt>Monthly EMI</dt><dd>{vehicle.emiAmount ? formatMoney(vehicle.emiAmount) : "-"}</dd></div>
+                    <div><dt>Loan amount</dt><dd>{vehicle.loanAmount ? formatMoney(vehicle.loanAmount) : "-"}</dd></div>
+                    <div><dt>Loan account</dt><dd>{vehicle.loanAccount || "-"}</dd></div>
+                  </dl>
+                </article>
+              );
+            })}
+          </div>
+        </section>
+      )}
     </section>
   );
 }
@@ -4782,11 +4901,12 @@ function buildSmartAlerts(data, includeAll = false) {
 function autoClosingPrincipal(row) {
   const bankClosing = toNumber(row.bankClosingPrincipal);
   if (bankClosing > 0) return bankClosing;
+  const savedClosing = toNumber(row.closingPrincipal);
+  if (savedClosing > 0) return savedClosing;
   const loanAmount = toNumber(row.loanAmount);
   const emiAmount = toNumber(row.emiAmount);
   const tenure = toNumber(row.tenure);
   const paidEmi = toNumber(row.paidEmi);
-  const savedClosing = toNumber(row.closingPrincipal);
   const enteredRate = String(row.interestRate ?? "").trim();
   const interestRate = enteredRate ? toNumber(enteredRate) : BANK_RELEASE_RATE_PERCENT;
   if (loanAmount <= 0 || emiAmount <= 0 || tenure <= 0) return savedClosing;
@@ -4802,8 +4922,8 @@ function autoClosingPrincipal(row) {
 
 function formatAutoClosingPrincipal(row) {
   const explicitBankClosing = String(row.bankClosingPrincipal ?? "").trim();
-  if (explicitBankClosing !== "") {
-    const bankValue = toNumber(explicitBankClosing);
+  const bankValue = toNumber(explicitBankClosing);
+  if (bankValue > 0) {
     return new Intl.NumberFormat("en-IN", { maximumFractionDigits: 0 }).format(bankValue);
   }
   const closing = autoClosingPrincipal(row);
@@ -4866,7 +4986,6 @@ function formText(form, name) {
 
 function mapManualVehicleForm(form) {
   return {
-    srNo: formText(form, "srNo"),
     regNo: formText(form, "regNo"),
     owner: formText(form, "owner"),
     manufacturer: formText(form, "manufacturer"),
@@ -4885,6 +5004,18 @@ function mapManualVehicleForm(form) {
     emiStart: formText(form, "emiStart"),
     emiEnd: formText(form, "emiEnd"),
     closingPrincipal: formText(form, "closingPrincipal"),
+    bodyRegNo: formText(form, "bodyRegNo") || "BODY",
+    bodyFinanceStatus: formText(form, "bodyFinanceStatus"),
+    bodyFinancier: formText(form, "bodyFinancier"),
+    bodyLoanAccount: formText(form, "bodyLoanAccount"),
+    bodyLoanAmount: formText(form, "bodyLoanAmount"),
+    bodyEmiAmount: formText(form, "bodyEmiAmount"),
+    bodyInterestRate: formText(form, "bodyInterestRate"),
+    bodyTenure: formText(form, "bodyTenure"),
+    bodyPaidEmi: formText(form, "bodyPaidEmi"),
+    bodyEmiStart: formText(form, "bodyEmiStart"),
+    bodyEmiEnd: formText(form, "bodyEmiEnd"),
+    bodyClosingPrincipal: formText(form, "bodyClosingPrincipal"),
     policyCompany: formText(form, "policyCompany"),
     policyNo: formText(form, "policyNo"),
     policyStart: formText(form, "policyStart"),
@@ -4896,8 +5027,7 @@ function mapManualVehicleForm(form) {
     permitIssue: formText(form, "permitIssue"),
     permitExpired: formText(form, "permitExpired"),
     permitType: formText(form, "permitType"),
-    nationalPermitExpired: formText(form, "nationalPermitExpired"),
-    remarks: formText(form, "remarks")
+    nationalPermitExpired: formText(form, "nationalPermitExpired")
   };
 }
 
