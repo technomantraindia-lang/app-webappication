@@ -1539,15 +1539,15 @@ function AdminApp({ session, onLogout }) {
     if (!file) return;
     try {
       setSaveStatus("Reading");
-      setToast("Cloud AI PDF reading...");
+      setToast("OpenRouter AI PDF reading...");
       let aiFields = null;
       let pdfText = "";
       try {
-        aiFields = await requestCloudPdfFields(file, session.token);
+        aiFields = await requestOpenRouterPdfFields(file, session.token);
         pdfText = aiPdfFieldsToText(aiFields);
-      } catch (cloudError) {
-        const reason = String(cloudError?.message || "request failed").replace(/\s+/g, " ").slice(0, 180);
-        setToast(`Cloud AI unavailable: ${reason}. Local OCR fallback reading...`);
+      } catch (openRouterError) {
+        const reason = String(openRouterError?.message || "request failed").replace(/\s+/g, " ").slice(0, 180);
+        setToast(`OpenRouter unavailable: ${reason}. Local OCR fallback reading...`);
         pdfText = await extractPdfTextWithOcr(file);
       }
       if (!pdfText.trim()) throw new Error("The PDF did not contain readable text or finance fields.");
@@ -4252,11 +4252,11 @@ function readFileAsDataUrl(file) {
   });
 }
 
-async function requestCloudPdfFields(file, token) {
+async function requestOpenRouterPdfFields(file, token) {
   const dataUrl = await readFileAsDataUrl(file);
   const separator = dataUrl.indexOf(",");
   const pdfBase64 = separator >= 0 ? dataUrl.slice(separator + 1) : "";
-  if (!pdfBase64) throw new Error("PDF could not be encoded for Cloud AI.");
+  if (!pdfBase64) throw new Error("PDF could not be encoded for OpenRouter AI.");
   const response = await fetch(`${API_BASE}/api/pdf-ai-extract`, {
     method: "POST",
     headers: authHeaders(token, { "Content-Type": "application/json" }),
@@ -4267,8 +4267,8 @@ async function requestCloudPdfFields(file, token) {
     })
   });
   const result = await response.json().catch(() => ({}));
-  if (!response.ok) throw new Error(result.error || result.message || `Cloud AI failed (${response.status}).`);
-  if (!result.fields || typeof result.fields !== "object") throw new Error("Cloud AI returned no finance fields.");
+  if (!response.ok) throw new Error(result.error || result.message || `OpenRouter failed (${response.status}).`);
+  if (!result.fields || typeof result.fields !== "object") throw new Error("OpenRouter returned no finance fields.");
   return result.fields;
 }
 
@@ -4337,7 +4337,7 @@ function mergeAiPdfFields(fields = {}, fallback = {}) {
     bankClosingPrincipal: valueOrFallback(fields.bankClosingPrincipal, fallback.bankClosingPrincipal),
     scheduleParsed: aiSchedule.length ? "yes" : fallback.scheduleParsed,
     emiSchedule: aiSchedule.length ? aiSchedule : (fallback.emiSchedule || []),
-    remarks: "Imported from bank PDF using Cloud AI"
+    remarks: "Imported from bank PDF using OpenRouter AI"
   };
 }
 
